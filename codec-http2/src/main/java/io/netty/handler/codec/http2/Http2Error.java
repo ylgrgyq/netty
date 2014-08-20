@@ -19,19 +19,19 @@ package io.netty.handler.codec.http2;
  * All error codes identified by the HTTP/2 spec.
  */
 public enum Http2Error {
-    NO_ERROR(0),
-    PROTOCOL_ERROR(1),
-    INTERNAL_ERROR(2),
-    FLOW_CONTROL_ERROR(3),
-    SETTINGS_TIMEOUT(4),
-    STREAM_CLOSED(5),
-    FRAME_SIZE_ERROR(6),
-    REFUSED_STREAM(7),
-    CANCEL(8),
-    COMPRESSION_ERROR(9),
-    CONNECT_ERROR(10),
-    ENHANCE_YOUR_CALM(11),
-    INADEQUATE_SECURITY(12);
+    NO_ERROR(0x0),
+    PROTOCOL_ERROR(0x1),
+    INTERNAL_ERROR(0x2),
+    FLOW_CONTROL_ERROR(0x3),
+    SETTINGS_TIMEOUT(0x4),
+    STREAM_CLOSED(0x5),
+    FRAME_SIZE_ERROR(0x6),
+    REFUSED_STREAM(0x7),
+    CANCEL(0x8),
+    COMPRESSION_ERROR(0x9),
+    CONNECT_ERROR(0xA),
+    ENHANCE_YOUR_CALM(0xB),
+    INADEQUATE_SECURITY(0xC);
 
     private final int code;
 

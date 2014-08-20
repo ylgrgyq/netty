@@ -30,14 +30,18 @@ public interface Http2OutboundFlowController {
         /**
          * Writes a single data frame to the remote endpoint.
          */
-        void writeFrame(int streamId, ByteBuf data, int padding, boolean endStream,
-                boolean endSegment, boolean compressed);
+        void writeFrame(int streamId, ByteBuf data, int padding, boolean endStream);
 
         /**
          * Called if an error occurred before the write could take place. Sets the failure on the
          * channel promise.
          */
         void setFailure(Throwable cause);
+
+        /**
+         * Gets the maximum allowed frame size.
+         */
+        int maxFrameSize();
     }
 
     /**
@@ -65,15 +69,6 @@ public interface Http2OutboundFlowController {
     void updateOutboundWindowSize(int streamId, int deltaWindowSize) throws Http2Exception;
 
     /**
-     * Indicates that the given stream or the entire connection is blocked and that no more messages
-     * should be sent.
-     *
-     * @param streamId the stream ID that is blocked or zero if the entire connection is blocked.
-     * @throws Http2Exception thrown if a protocol-related error occurred.
-     */
-    void setBlocked(int streamId) throws Http2Exception;
-
-    /**
      * Sends the frame with outbound flow control applied. The frame may be written at a later time,
      * depending on whether the remote endpoint can receive the frame now.
      * <p/>
@@ -88,11 +83,9 @@ public interface Http2OutboundFlowController {
      * @param data the data be be sent to the remote endpoint.
      * @param padding the number of bytes of padding to be added to the frame.
      * @param endStream indicates whether this frames is to be the last sent on this stream.
-     * @param endSegment indicates whether this is to be the last frame in the segment.
-     * @param compressed whether the data is compressed using gzip compression.
      * @param frameWriter peforms to the write of the frame to the remote endpoint.
      * @throws Http2Exception thrown if a protocol-related error occurred.
      */
     void sendFlowControlled(int streamId, ByteBuf data, int padding, boolean endStream,
-            boolean endSegment, boolean compressed, FrameWriter frameWriter) throws Http2Exception;
+            FrameWriter frameWriter) throws Http2Exception;
 }

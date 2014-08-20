@@ -81,7 +81,7 @@ public class NioSctpServerChannel extends AbstractNioMessageChannel
                 addresses.add((InetSocketAddress) socketAddress);
             }
             return addresses;
-        } catch (Throwable t) {
+        } catch (Throwable ignored) {
             return Collections.emptySet();
         }
     }
@@ -218,6 +218,11 @@ public class NioSctpServerChannel extends AbstractNioMessageChannel
 
     @Override
     protected boolean doWriteMessage(Object msg, ChannelOutboundBuffer in) throws Exception {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected Object filterOutboundMessage(Object msg) throws Exception {
         throw new UnsupportedOperationException();
     }
 

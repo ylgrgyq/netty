@@ -240,7 +240,7 @@ import java.util.List;
  * public class FirstDecoder extends {@link ReplayingDecoder}&lt;{@link Void}&gt; {
  *
  *     {@code @Override}
- *     protected Object decode({@link ChannelHandlerContext} ctx,
+ *     protected void decode({@link ChannelHandlerContext} ctx,
  *                             {@link ByteBuf} buf, List&lt;Object&gt; out) {
  *         ...
  *         // Decode the first message
@@ -336,17 +336,24 @@ public abstract class ReplayingDecoder<S> extends ByteToMessageDecoder {
         } catch (Exception e) {
             throw new DecoderException(e);
         } finally {
-            if (cumulation != null) {
-                cumulation.release();
-                cumulation = null;
+            try {
+                if (cumulation != null) {
+                    cumulation.release();
+                    cumulation = null;
+                }
+                int size = out.size();
+                for (int i = 0; i < size; i++) {
+                    ctx.fireChannelRead(out.get(i));
+                }
+                if (size > 0) {
+                    // Something was read, call fireChannelReadComplete()
+                    ctx.fireChannelReadComplete();
+                }
+                ctx.fireChannelInactive();
+            } finally {
+                // recycle in all cases
+                out.recycle();
             }
-
-            int size = out.size();
-            for (int i = 0; i < size; i ++) {
-                ctx.fireChannelRead(out.get(i));
-            }
-            ctx.fireChannelInactive();
-            out.recycle();
         }
     }
 

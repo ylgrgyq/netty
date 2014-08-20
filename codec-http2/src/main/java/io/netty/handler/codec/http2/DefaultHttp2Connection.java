@@ -15,30 +15,21 @@
 
 package io.netty.handler.codec.http2;
 
-import static io.netty.handler.codec.http2.Http2CodecUtil.CONNECTION_STREAM_ID;
-import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_PRIORITY_WEIGHT;
-import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_WEIGHT;
-import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_WEIGHT;
-import static io.netty.handler.codec.http2.Http2CodecUtil.immediateRemovalPolicy;
-import static io.netty.handler.codec.http2.Http2Exception.format;
-import static io.netty.handler.codec.http2.Http2Exception.protocolError;
-import static io.netty.handler.codec.http2.Http2Stream.State.CLOSED;
-import static io.netty.handler.codec.http2.Http2Stream.State.HALF_CLOSED_LOCAL;
-import static io.netty.handler.codec.http2.Http2Stream.State.HALF_CLOSED_REMOTE;
-import static io.netty.handler.codec.http2.Http2Stream.State.IDLE;
-import static io.netty.handler.codec.http2.Http2Stream.State.OPEN;
-import static io.netty.handler.codec.http2.Http2Stream.State.RESERVED_LOCAL;
-import static io.netty.handler.codec.http2.Http2Stream.State.RESERVED_REMOTE;
 import io.netty.handler.codec.http2.Http2StreamRemovalPolicy.Action;
-import io.netty.util.collection.PrimitiveCollections;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
+import io.netty.util.collection.PrimitiveCollections;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Set;
+
+import static io.netty.handler.codec.http2.Http2CodecUtil.*;
+import static io.netty.handler.codec.http2.Http2Exception.*;
+import static io.netty.handler.codec.http2.Http2Stream.State.*;
 
 /**
  * Simple implementation of {@link Http2Connection}.
@@ -54,39 +45,28 @@ public class DefaultHttp2Connection implements Http2Connection {
     private final Http2StreamRemovalPolicy removalPolicy;
 
     /**
-     * Creates a connection with compression disabled and an immediate stream removal policy.
+     * Creates a connection with an immediate stream removal policy.
      *
      * @param server whether or not this end-point is the server-side of the HTTP/2 connection.
      */
     public DefaultHttp2Connection(boolean server) {
-        this(server, false);
-    }
-
-    /**
-     * Creates a connection with an immediate stream removal policy.
-     *
-     * @param server whether or not this end-point is the server-side of the HTTP/2 connection.
-     * @param allowCompressedData if true, compressed frames are allowed from the remote end-point.
-     */
-    public DefaultHttp2Connection(boolean server, boolean allowCompressedData) {
-        this(server, allowCompressedData, immediateRemovalPolicy());
+        this(server, immediateRemovalPolicy());
     }
 
     /**
      * Creates a new connection with the given settings.
      *
      * @param server whether or not this end-point is the server-side of the HTTP/2 connection.
-     * @param allowCompressedData if true, compressed frames are allowed from the remote end-point.
      * @param removalPolicy the policy to be used for removal of closed stream.
      */
-    public DefaultHttp2Connection(boolean server, boolean allowCompressedData,
+    public DefaultHttp2Connection(boolean server,
             Http2StreamRemovalPolicy removalPolicy) {
         if (removalPolicy == null) {
             throw new NullPointerException("removalPolicy");
         }
         this.removalPolicy = removalPolicy;
-        localEndpoint = new DefaultEndpoint(server, allowCompressedData);
-        remoteEndpoint = new DefaultEndpoint(!server, false);
+        localEndpoint = new DefaultEndpoint(server);
+        remoteEndpoint = new DefaultEndpoint(!server);
 
         // Tell the removal policy how to remove a stream from this connection.
         removalPolicy.setAction(new Action() {
@@ -141,7 +121,7 @@ public class DefaultHttp2Connection implements Http2Connection {
 
     @Override
     public Set<Http2Stream> activeStreams() {
-        return java.util.Collections.unmodifiableSet(activeStreams);
+        return Collections.unmodifiableSet(activeStreams);
     }
 
     @Override
@@ -157,17 +137,6 @@ public class DefaultHttp2Connection implements Http2Connection {
     @Override
     public boolean isGoAway() {
         return localEndpoint.isGoAwayReceived() || remoteEndpoint.isGoAwayReceived();
-    }
-
-    private void addStream(DefaultStream stream) {
-        // Add the stream to the map and priority tree.
-        streamMap.put(stream.id(), stream);
-        connectionStream.addChild(stream, false);
-
-        // Notify the observers of the event.
-        for (Listener listener : listeners) {
-            listener.streamAdded(stream);
-        }
     }
 
     private void removeStream(DefaultStream stream) {
@@ -190,42 +159,6 @@ public class DefaultHttp2Connection implements Http2Connection {
         // Notify the listeners.
         for (Listener listener : listeners) {
             listener.streamActive(stream);
-        }
-    }
-
-    private void deactivate(DefaultStream stream) {
-        activeStreams.remove(stream);
-
-        // Update the number of active streams initiated by the endpoint.
-        stream.createdBy().numActiveStreams--;
-
-        // Notify the listeners.
-        for (Listener listener : listeners) {
-            listener.streamInactive(stream);
-        }
-    }
-
-    private void notifyGoingAway() {
-        for (Listener listener : listeners) {
-            listener.goingAway();
-        }
-    }
-
-    private void notifyHalfClosed(Http2Stream stream) {
-        for (Listener listener : listeners) {
-            listener.streamHalfClosed(stream);
-        }
-    }
-
-    private void notifyPriorityChanged(Http2Stream stream, Http2Stream previousParent) {
-        for (Listener listener : listeners) {
-            listener.streamPriorityChanged(stream, previousParent);
-        }
-    }
-
-    private void notifyPrioritySubtreeChanged(Http2Stream stream, Http2Stream subtreeRoot) {
-        for (Listener listener : listeners) {
-            listener.streamPrioritySubtreeChanged(stream, subtreeRoot);
         }
     }
 
@@ -422,6 +355,18 @@ public class DefaultHttp2Connection implements Http2Connection {
             }
         }
 
+        private void notifyPriorityChanged(Http2Stream stream, Http2Stream previousParent) {
+            for (Listener listener : listeners) {
+                listener.streamPriorityChanged(stream, previousParent);
+            }
+        }
+
+        private void notifyPrioritySubtreeChanged(Http2Stream stream, Http2Stream subtreeRoot) {
+            for (Listener listener : listeners) {
+                listener.streamPrioritySubtreeChanged(stream, subtreeRoot);
+            }
+        }
+
         @Override
         public Http2Stream verifyState(Http2Error error, State... allowedStates)
                 throws Http2Exception {
@@ -463,6 +408,18 @@ public class DefaultHttp2Connection implements Http2Connection {
             return this;
         }
 
+        private void deactivate(DefaultStream stream) {
+            activeStreams.remove(stream);
+
+            // Update the number of active streams initiated by the endpoint.
+            stream.createdBy().numActiveStreams--;
+
+            // Notify the listeners.
+            for (Listener listener : listeners) {
+                listener.streamInactive(stream);
+            }
+        }
+
         @Override
         public Http2Stream closeLocalSide() {
             switch (state) {
@@ -493,6 +450,12 @@ public class DefaultHttp2Connection implements Http2Connection {
                     break;
             }
             return this;
+        }
+
+        private void notifyHalfClosed(Http2Stream stream) {
+            for (Listener listener : listeners) {
+                listener.streamHalfClosed(stream);
+            }
         }
 
         @Override
@@ -575,7 +538,7 @@ public class DefaultHttp2Connection implements Http2Connection {
         }
     }
 
-    private static <T> IntObjectMap<DefaultStream> newChildMap() {
+    private static IntObjectMap<DefaultStream> newChildMap() {
         return new IntObjectHashMap<DefaultStream>(4);
     }
 
@@ -583,24 +546,22 @@ public class DefaultHttp2Connection implements Http2Connection {
      * Stream class representing the connection, itself.
      */
     private final class ConnectionStream extends DefaultStream {
-        public ConnectionStream() {
+        private ConnectionStream() {
             super(CONNECTION_STREAM_ID);
         }
 
         @Override
-        public Http2Stream setPriority(int parentStreamId, short weight, boolean exclusive)
-                throws Http2Exception {
+        public Http2Stream setPriority(int parentStreamId, short weight, boolean exclusive) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public Http2Stream verifyState(Http2Error error, State... allowedStates)
-                throws Http2Exception {
+        public Http2Stream verifyState(Http2Error error, State... allowedStates) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public Http2Stream openForPush() throws Http2Exception {
+        public Http2Stream openForPush() {
             throw new UnsupportedOperationException();
         }
 
@@ -628,8 +589,7 @@ public class DefaultHttp2Connection implements Http2Connection {
         private int nextStreamId;
         private int lastStreamCreated;
         private int lastKnownStream = -1;
-        private boolean pushToAllowed;
-        private boolean allowCompressedData;
+        private boolean pushToAllowed = true;
 
         /**
          * The maximum number of active streams allowed to be created by this endpoint.
@@ -641,8 +601,7 @@ public class DefaultHttp2Connection implements Http2Connection {
          */
         private int numActiveStreams;
 
-        DefaultEndpoint(boolean server, boolean allowCompressedData) {
-            this.allowCompressedData = allowCompressedData;
+        DefaultEndpoint(boolean server) {
             this.server = server;
 
             // Determine the starting stream ID for this endpoint. Client-initiated streams
@@ -727,6 +686,17 @@ public class DefaultHttp2Connection implements Http2Connection {
             return stream;
         }
 
+        private void addStream(DefaultStream stream) {
+            // Add the stream to the map and priority tree.
+            streamMap.put(stream.id(), stream);
+            connectionStream.addChild(stream, false);
+
+            // Notify the observers of the event.
+            for (Listener listener : listeners) {
+                listener.streamAdded(stream);
+            }
+        }
+
         @Override
         public void allowPushTo(boolean allow) {
             if (allow && server) {
@@ -756,16 +726,6 @@ public class DefaultHttp2Connection implements Http2Connection {
         }
 
         @Override
-        public boolean allowCompressedData() {
-            return allowCompressedData;
-        }
-
-        @Override
-        public void allowCompressedData(boolean allow) {
-            allowCompressedData = allow;
-        }
-
-        @Override
         public int lastStreamCreated() {
             return lastStreamCreated;
         }
@@ -786,6 +746,12 @@ public class DefaultHttp2Connection implements Http2Connection {
             this.lastKnownStream = lastKnownStream;
             if (!alreadyNotified) {
                 notifyGoingAway();
+            }
+        }
+
+        private void notifyGoingAway() {
+            for (Listener listener : listeners) {
+                listener.goingAway();
             }
         }
 

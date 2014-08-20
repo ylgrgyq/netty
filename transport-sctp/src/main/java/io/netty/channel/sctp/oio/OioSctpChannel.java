@@ -34,6 +34,7 @@ import io.netty.channel.sctp.SctpMessage;
 import io.netty.channel.sctp.SctpNotificationHandler;
 import io.netty.channel.sctp.SctpServerChannel;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -64,6 +65,7 @@ public class OioSctpChannel extends AbstractOioMessageChannel
             InternalLoggerFactory.getInstance(OioSctpChannel.class);
 
     private static final ChannelMetadata METADATA = new ChannelMetadata(false);
+    private static final String EXPECTED_TYPE = " (expected: " + StringUtil.simpleClassName(SctpMessage.class) + ')';
 
     private final SctpChannel ch;
     private final SctpChannelConfig config;
@@ -73,8 +75,6 @@ public class OioSctpChannel extends AbstractOioMessageChannel
     private final Selector connectSelector;
 
     private final NotificationHandler<?> notificationHandler;
-
-    private RecvByteBufAllocator.Handle allocHandle;
 
     private static SctpChannel openChannel() {
         try {
@@ -185,10 +185,7 @@ public class OioSctpChannel extends AbstractOioMessageChannel
         Set<SelectionKey> reableKeys = readSelector.selectedKeys();
         try {
             for (SelectionKey ignored : reableKeys) {
-                RecvByteBufAllocator.Handle allocHandle = this.allocHandle;
-                if (allocHandle == null) {
-                    this.allocHandle = allocHandle = config().getRecvByteBufAllocator().newHandle();
-                }
+                RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
                 ByteBuf buffer = allocHandle.allocate(config().getAllocator());
                 boolean free = true;
 
@@ -274,10 +271,20 @@ public class OioSctpChannel extends AbstractOioMessageChannel
     }
 
     @Override
+    protected Object filterOutboundMessage(Object msg) throws Exception {
+        if (msg instanceof SctpMessage) {
+            return msg;
+        }
+
+        throw new UnsupportedOperationException(
+                "unsupported message type: " + StringUtil.simpleClassName(msg) + EXPECTED_TYPE);
+    }
+
+    @Override
     public Association association() {
         try {
             return ch.association();
-        } catch (IOException e) {
+        } catch (IOException ignored) {
             return null;
         }
     }
@@ -309,7 +316,7 @@ public class OioSctpChannel extends AbstractOioMessageChannel
                 addresses.add((InetSocketAddress) socketAddress);
             }
             return addresses;
-        } catch (Throwable t) {
+        } catch (Throwable ignored) {
             return Collections.emptySet();
         }
     }
@@ -336,7 +343,7 @@ public class OioSctpChannel extends AbstractOioMessageChannel
                 addresses.add((InetSocketAddress) socketAddress);
             }
             return addresses;
-        } catch (Throwable t) {
+        } catch (Throwable ignored) {
             return Collections.emptySet();
         }
     }

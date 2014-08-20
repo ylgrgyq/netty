@@ -33,10 +33,13 @@ import java.io.IOException;
  * Abstract base class for OIO which reads and writes bytes from/to a Socket
  */
 public abstract class AbstractOioByteChannel extends AbstractOioChannel {
-    private RecvByteBufAllocator.Handle allocHandle;
+
+    private static final ChannelMetadata METADATA = new ChannelMetadata(false);
+    private static final String EXPECTED_TYPES =
+            " (expected: " + StringUtil.simpleClassName(ByteBuf.class) + ", " +
+            StringUtil.simpleClassName(FileRegion.class) + ')';
 
     private volatile boolean inputShutdown;
-    private static final ChannelMetadata METADATA = new ChannelMetadata(false);
 
     /**
      * @see AbstractOioByteChannel#AbstractOioByteChannel(Channel)
@@ -78,10 +81,7 @@ public abstract class AbstractOioByteChannel extends AbstractOioChannel {
         final ChannelConfig config = config();
         final ChannelPipeline pipeline = pipeline();
 
-        RecvByteBufAllocator.Handle allocHandle = this.allocHandle;
-        if (allocHandle == null) {
-            this.allocHandle = allocHandle = config.getRecvByteBufAllocator().newHandle();
-        }
+        RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
 
         ByteBuf byteBuf = allocHandle.allocate(alloc());
 
@@ -193,18 +193,35 @@ public abstract class AbstractOioByteChannel extends AbstractOioChannel {
             }
             if (msg instanceof ByteBuf) {
                 ByteBuf buf = (ByteBuf) msg;
-                while (buf.isReadable()) {
+                int readableBytes = buf.readableBytes();
+                while (readableBytes > 0) {
                     doWriteBytes(buf);
+                    int newReadableBytes = buf.readableBytes();
+                    in.progress(readableBytes - newReadableBytes);
+                    readableBytes = newReadableBytes;
                 }
                 in.remove();
             } else if (msg instanceof FileRegion) {
-                doWriteFileRegion((FileRegion) msg);
+                FileRegion region = (FileRegion) msg;
+                long transfered = region.transfered();
+                doWriteFileRegion(region);
+                in.progress(region.transfered() - transfered);
                 in.remove();
             } else {
                 in.remove(new UnsupportedOperationException(
                         "unsupported message type: " + StringUtil.simpleClassName(msg)));
             }
         }
+    }
+
+    @Override
+    protected final Object filterOutboundMessage(Object msg) throws Exception {
+        if (msg instanceof ByteBuf || msg instanceof FileRegion) {
+            return msg;
+        }
+
+        throw new UnsupportedOperationException(
+                "unsupported message type: " + StringUtil.simpleClassName(msg) + EXPECTED_TYPES);
     }
 
     /**

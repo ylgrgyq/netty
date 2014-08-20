@@ -20,7 +20,6 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelException;
 import io.netty.channel.EventLoopException;
 import io.netty.channel.SingleThreadEventLoop;
-import io.netty.channel.nio.AbstractNioChannel.NioUnsafe;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
@@ -40,12 +39,12 @@ import java.util.Iterator;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * {@link SingleThreadEventLoop} implementation which register the {@link Channel}'s to a
- * {@link Selector} and so does the multi-plexing of these in the event loop.
- *
+ * A {@link SingleThreadEventLoop} implementation which registers each {@link Channel} with a
+ * NIO {@link Selector} and performs the multiplexing of these in the event loop.
  */
 public final class NioEventLoop extends SingleThreadEventLoop {
 
@@ -105,7 +104,6 @@ public final class NioEventLoop extends SingleThreadEventLoop {
      * waken up.
      */
     private final AtomicBoolean wakenUp = new AtomicBoolean();
-    private boolean oldWakenUp;
 
     private volatile int ioRatio = 50;
     private int cancelledKeys;
@@ -301,80 +299,85 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
     @Override
     protected void run() {
-        for (;;) {
-            oldWakenUp = wakenUp.getAndSet(false);
-            try {
-                if (hasTasks()) {
-                    selectNow();
-                } else {
-                    select();
+        boolean oldWakenUp = wakenUp.getAndSet(false);
+        try {
+            if (hasTasks()) {
+                selectNow();
+            } else {
+                select(oldWakenUp);
 
-                    // 'wakenUp.compareAndSet(false, true)' is always evaluated
-                    // before calling 'selector.wakeup()' to reduce the wake-up
-                    // overhead. (Selector.wakeup() is an expensive operation.)
-                    //
-                    // However, there is a race condition in this approach.
-                    // The race condition is triggered when 'wakenUp' is set to
-                    // true too early.
-                    //
-                    // 'wakenUp' is set to true too early if:
-                    // 1) Selector is waken up between 'wakenUp.set(false)' and
-                    //    'selector.select(...)'. (BAD)
-                    // 2) Selector is waken up between 'selector.select(...)' and
-                    //    'if (wakenUp.get()) { ... }'. (OK)
-                    //
-                    // In the first case, 'wakenUp' is set to true and the
-                    // following 'selector.select(...)' will wake up immediately.
-                    // Until 'wakenUp' is set to false again in the next round,
-                    // 'wakenUp.compareAndSet(false, true)' will fail, and therefore
-                    // any attempt to wake up the Selector will fail, too, causing
-                    // the following 'selector.select(...)' call to block
-                    // unnecessarily.
-                    //
-                    // To fix this problem, we wake up the selector again if wakenUp
-                    // is true immediately after selector.select(...).
-                    // It is inefficient in that it wakes up the selector for both
-                    // the first case (BAD - wake-up required) and the second case
-                    // (OK - no wake-up required).
+                // 'wakenUp.compareAndSet(false, true)' is always evaluated
+                // before calling 'selector.wakeup()' to reduce the wake-up
+                // overhead. (Selector.wakeup() is an expensive operation.)
+                //
+                // However, there is a race condition in this approach.
+                // The race condition is triggered when 'wakenUp' is set to
+                // true too early.
+                //
+                // 'wakenUp' is set to true too early if:
+                // 1) Selector is waken up between 'wakenUp.set(false)' and
+                //    'selector.select(...)'. (BAD)
+                // 2) Selector is waken up between 'selector.select(...)' and
+                //    'if (wakenUp.get()) { ... }'. (OK)
+                //
+                // In the first case, 'wakenUp' is set to true and the
+                // following 'selector.select(...)' will wake up immediately.
+                // Until 'wakenUp' is set to false again in the next round,
+                // 'wakenUp.compareAndSet(false, true)' will fail, and therefore
+                // any attempt to wake up the Selector will fail, too, causing
+                // the following 'selector.select(...)' call to block
+                // unnecessarily.
+                //
+                // To fix this problem, we wake up the selector again if wakenUp
+                // is true immediately after selector.select(...).
+                // It is inefficient in that it wakes up the selector for both
+                // the first case (BAD - wake-up required) and the second case
+                // (OK - no wake-up required).
 
-                    if (wakenUp.get()) {
-                        selector.wakeup();
-                    }
-                }
-
-                cancelledKeys = 0;
-                needsToSelectAgain = false;
-                final int ioRatio = this.ioRatio;
-                if (ioRatio == 100) {
-                    processSelectedKeys();
-                    runAllTasks();
-                } else {
-                    final long ioStartTime = System.nanoTime();
-
-                    processSelectedKeys();
-
-                    final long ioTime = System.nanoTime() - ioStartTime;
-                    runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
-                }
-
-                if (isShuttingDown()) {
-                    closeAll();
-                    if (confirmShutdown()) {
-                        break;
-                    }
-                }
-            } catch (Throwable t) {
-                logger.warn("Unexpected exception in the selector loop.", t);
-
-                // Prevent possible consecutive immediate failures that lead to
-                // excessive CPU consumption.
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    // Ignore.
+                if (wakenUp.get()) {
+                    selector.wakeup();
                 }
             }
+
+            cancelledKeys = 0;
+            needsToSelectAgain = false;
+            final int ioRatio = this.ioRatio;
+            if (ioRatio == 100) {
+                processSelectedKeys();
+                runAllTasks();
+            } else {
+                final long ioStartTime = System.nanoTime();
+
+                processSelectedKeys();
+
+                final long ioTime = System.nanoTime() - ioStartTime;
+                runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
+            }
+
+            if (isShuttingDown()) {
+                closeAll();
+                if (confirmShutdown()) {
+                    cleanupAndTerminate(true);
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            logger.warn("Unexpected exception in the selector loop.", t);
+
+            // TODO: After using a ForkJoinPool that is potentially shared with other software
+            // than Netty. The Thread.sleep might be problematic. Even though this is unlikely to ever
+            // happen anyways.
+
+            // Prevent possible consecutive immediate failures that lead to
+            // excessive CPU consumption.
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                // Ignore.
+            }
         }
+
+        scheduleExecution();
     }
 
     private void processSelectedKeys() {
@@ -496,7 +499,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     private static void processSelectedKey(SelectionKey k, AbstractNioChannel ch) {
-        final NioUnsafe unsafe = ch.unsafe();
+        final AbstractNioChannel.NioUnsafe unsafe = ch.unsafe();
         if (!k.isValid()) {
             // close the channel if the key is not valid anymore
             unsafe.close(unsafe.voidPromise());
@@ -527,7 +530,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
                 unsafe.finishConnect();
             }
-        } catch (CancelledKeyException e) {
+        } catch (CancelledKeyException ignored) {
             unsafe.close(unsafe.voidPromise());
         }
     }
@@ -603,7 +606,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         }
     }
 
-    private void select() throws IOException {
+    private void select(boolean oldWakenUp) throws IOException {
         Selector selector = this.selector;
         try {
             int selectCnt = 0;
@@ -622,10 +625,11 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 int selectedKeys = selector.select(timeoutMillis);
                 selectCnt ++;
 
-                if (selectedKeys != 0 || oldWakenUp || wakenUp.get() || hasTasks()) {
-                    // Selected something,
-                    // waken up by user, or
-                    // the task queue has a pending task.
+                if (selectedKeys != 0 || oldWakenUp || wakenUp.get() || hasTasks() || hasScheduledTasks()) {
+                    // - Selected something,
+                    // - waken up by user, or
+                    // - the task queue has a pending task.
+                    // - a scheduled task is ready for processing
                     break;
                 }
                 if (Thread.interrupted()) {
@@ -642,7 +646,12 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                     selectCnt = 1;
                     break;
                 }
-                if (SELECTOR_AUTO_REBUILD_THRESHOLD > 0 &&
+
+                long time = System.nanoTime();
+                if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) >= currentTimeNanos) {
+                    // timeoutMillis elapsed without anything selected.
+                    selectCnt = 1;
+                } else if (SELECTOR_AUTO_REBUILD_THRESHOLD > 0 &&
                         selectCnt >= SELECTOR_AUTO_REBUILD_THRESHOLD) {
                     // The selector returned prematurely many times in a row.
                     // Rebuild the selector to work around the problem.
@@ -659,7 +668,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                     break;
                 }
 
-                currentTimeNanos = System.nanoTime();
+                currentTimeNanos = time;
             }
 
             if (selectCnt > MIN_PREMATURE_SELECTOR_RETURNS) {

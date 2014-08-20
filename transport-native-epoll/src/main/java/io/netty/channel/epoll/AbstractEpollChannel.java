@@ -15,10 +15,15 @@
  */
 package io.netty.channel.epoll;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.AbstractChannel;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelMetadata;
 import io.netty.channel.EventLoop;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.OneTimeTask;
 
 import java.net.InetSocketAddress;
@@ -93,11 +98,14 @@ abstract class AbstractEpollChannel extends AbstractChannel {
 
     @Override
     protected void doDeregister() throws Exception {
-        ((EpollEventLoop) eventLoop()).remove(this);
+        ((EpollEventLoop) eventLoop().unwrap()).remove(this);
     }
 
     @Override
     protected void doBeginRead() throws Exception {
+        // Channel.read() or ChannelHandlerContext.read() was called
+        ((AbstractEpollUnsafe) unsafe()).readPending = true;
+
         if ((flags & readFlag) == 0) {
             flags |= readFlag;
             modifyEvents();
@@ -146,18 +154,58 @@ abstract class AbstractEpollChannel extends AbstractChannel {
 
     private void modifyEvents() {
         if (isOpen()) {
-            ((EpollEventLoop) eventLoop()).modify(this);
+            ((EpollEventLoop) eventLoop().unwrap()).modify(this);
         }
     }
 
     @Override
     protected void doRegister() throws Exception {
-        EpollEventLoop loop = (EpollEventLoop) eventLoop();
-        loop.add(this);
+        ((EpollEventLoop) eventLoop().unwrap()).add(this);
     }
 
     @Override
     protected abstract AbstractEpollUnsafe newUnsafe();
+
+    /**
+     * Returns an off-heap copy of the specified {@link ByteBuf}, and releases the original one.
+     */
+    protected final ByteBuf newDirectBuffer(ByteBuf buf) {
+        return newDirectBuffer(buf, buf);
+    }
+
+    /**
+     * Returns an off-heap copy of the specified {@link ByteBuf}, and releases the specified holder.
+     * The caller must ensure that the holder releases the original {@link ByteBuf} when the holder is released by
+     * this method.
+     */
+    protected final ByteBuf newDirectBuffer(Object holder, ByteBuf buf) {
+        final int readableBytes = buf.readableBytes();
+        if (readableBytes == 0) {
+            ReferenceCountUtil.safeRelease(holder);
+            return Unpooled.EMPTY_BUFFER;
+        }
+
+        final ByteBufAllocator alloc = alloc();
+        if (alloc.isDirectBufferPooled()) {
+            return newDirectBuffer0(holder, buf, alloc, readableBytes);
+        }
+
+        final ByteBuf directBuf = ByteBufUtil.threadLocalDirectBuffer();
+        if (directBuf == null) {
+            return newDirectBuffer0(holder, buf, alloc, readableBytes);
+        }
+
+        directBuf.writeBytes(buf, buf.readerIndex(), readableBytes);
+        ReferenceCountUtil.safeRelease(holder);
+        return directBuf;
+    }
+
+    private static ByteBuf newDirectBuffer0(Object holder, ByteBuf buf, ByteBufAllocator alloc, int capacity) {
+        final ByteBuf directBuf = alloc.directBuffer(capacity);
+        directBuf.writeBytes(buf, buf.readerIndex(), capacity);
+        ReferenceCountUtil.safeRelease(holder);
+        return directBuf;
+    }
 
     protected static void checkResolvable(InetSocketAddress addr) {
         if (addr.isUnresolved()) {
@@ -178,13 +226,6 @@ abstract class AbstractEpollChannel extends AbstractChannel {
          */
         void epollRdHupReady() {
             // NOOP
-        }
-
-        @Override
-        public void beginRead() {
-            // Channel.read() or ChannelHandlerContext.read() was called
-            readPending = true;
-            super.beginRead();
         }
 
         @Override

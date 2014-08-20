@@ -227,99 +227,84 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
     @Override
     protected int doWriteBytes(ByteBuf buf) throws Exception {
         final int expectedWrittenBytes = buf.readableBytes();
-        final int writtenBytes = buf.readBytes(javaChannel(), expectedWrittenBytes);
-        return writtenBytes;
+        return buf.readBytes(javaChannel(), expectedWrittenBytes);
     }
 
     @Override
     protected long doWriteFileRegion(FileRegion region) throws Exception {
         final long position = region.transfered();
-        final long writtenBytes = region.transferTo(javaChannel(), position);
-        return writtenBytes;
+        return region.transferTo(javaChannel(), position);
     }
 
     @Override
     protected void doWrite(ChannelOutboundBuffer in) throws Exception {
         for (;;) {
-            // Do non-gathering write for a single buffer case.
-            final int msgCount = in.size();
-            if (msgCount <= 1) {
-                super.doWrite(in);
-                return;
+            int size = in.size();
+            if (size == 0) {
+                // All written so clear OP_WRITE
+                clearOpWrite();
+                break;
             }
-            NioSocketChannelOutboundBuffer nioIn = (NioSocketChannelOutboundBuffer) in;
-            // Ensure the pending writes are made of ByteBufs only.
-            ByteBuffer[] nioBuffers = nioIn.nioBuffers();
-            if (nioBuffers == null) {
-                super.doWrite(in);
-                return;
-            }
-
-            int nioBufferCnt = nioIn.nioBufferCount();
-            long expectedWrittenBytes = nioIn.nioBufferSize();
-
-            final SocketChannel ch = javaChannel();
             long writtenBytes = 0;
             boolean done = false;
             boolean setOpWrite = false;
-            for (int i = config().getWriteSpinCount() - 1; i >= 0; i --) {
-                final long localWrittenBytes = ch.write(nioBuffers, 0, nioBufferCnt);
-                if (localWrittenBytes == 0) {
-                    setOpWrite = true;
+
+            // Ensure the pending writes are made of ByteBufs only.
+            ByteBuffer[] nioBuffers = in.nioBuffers();
+            int nioBufferCnt = in.nioBufferCount();
+            long expectedWrittenBytes = in.nioBufferSize();
+            SocketChannel ch = javaChannel();
+
+            // Always us nioBuffers() to workaround data-corruption.
+            // See https://github.com/netty/netty/issues/2761
+            switch (nioBufferCnt) {
+                case 0:
+                    // We have something else beside ByteBuffers to write so fallback to normal writes.
+                    super.doWrite(in);
+                    return;
+                case 1:
+                    // Only one ByteBuf so use non-gathering write
+                    ByteBuffer nioBuffer = nioBuffers[0];
+                    for (int i = config().getWriteSpinCount() - 1; i >= 0; i --) {
+                        final int localWrittenBytes = ch.write(nioBuffer);
+                        if (localWrittenBytes == 0) {
+                            setOpWrite = true;
+                            break;
+                        }
+                        expectedWrittenBytes -= localWrittenBytes;
+                        writtenBytes += localWrittenBytes;
+                        if (expectedWrittenBytes == 0) {
+                            done = true;
+                            break;
+                        }
+                    }
                     break;
-                }
-                expectedWrittenBytes -= localWrittenBytes;
-                writtenBytes += localWrittenBytes;
-                if (expectedWrittenBytes == 0) {
-                    done = true;
+                default:
+                    for (int i = config().getWriteSpinCount() - 1; i >= 0; i --) {
+                        final long localWrittenBytes = ch.write(nioBuffers, 0, nioBufferCnt);
+                        if (localWrittenBytes == 0) {
+                            setOpWrite = true;
+                            break;
+                        }
+                        expectedWrittenBytes -= localWrittenBytes;
+                        writtenBytes += localWrittenBytes;
+                        if (expectedWrittenBytes == 0) {
+                            done = true;
+                            break;
+                        }
+                    }
                     break;
-                }
             }
 
-            if (done) {
-                // Release all buffers
-                for (int i = msgCount; i > 0; i --) {
-                    nioIn.remove();
-                }
+            // Release the fully written buffers, and update the indexes of the partially written buffer.
+            in.removeBytes(writtenBytes);
 
-                // Finish the write loop if no new messages were flushed by in.remove().
-                if (in.isEmpty()) {
-                    clearOpWrite();
-                    break;
-                }
-            } else {
+            if (!done) {
                 // Did not write all buffers completely.
-                // Release the fully written buffers and update the indexes of the partially written buffer.
-
-                for (int i = msgCount; i > 0; i --) {
-                    final ByteBuf buf = (ByteBuf) in.current();
-                    final int readerIndex = buf.readerIndex();
-                    final int readableBytes = buf.writerIndex() - readerIndex;
-
-                    if (readableBytes < writtenBytes) {
-                        nioIn.progress(readableBytes);
-                        nioIn.remove();
-                        writtenBytes -= readableBytes;
-                    } else if (readableBytes > writtenBytes) {
-                        buf.readerIndex(readerIndex + (int) writtenBytes);
-                        nioIn.progress(writtenBytes);
-                        break;
-                    } else { // readableBytes == writtenBytes
-                        nioIn.progress(readableBytes);
-                        nioIn.remove();
-                        break;
-                    }
-                }
-
                 incompleteWrite(setOpWrite);
                 break;
             }
         }
-    }
-
-    @Override
-    protected ChannelOutboundBuffer newOutboundBuffer() {
-        return NioSocketChannelOutboundBuffer.newInstance(this);
     }
 
     private final class NioSocketChannelConfig  extends DefaultSocketChannelConfig {

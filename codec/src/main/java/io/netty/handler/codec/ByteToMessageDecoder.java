@@ -213,16 +213,24 @@ public abstract class ByteToMessageDecoder extends ChannelHandlerAdapter {
         } catch (Exception e) {
             throw new DecoderException(e);
         } finally {
-            if (cumulation != null) {
-                cumulation.release();
-                cumulation = null;
+            try {
+                if (cumulation != null) {
+                    cumulation.release();
+                    cumulation = null;
+                }
+                int size = out.size();
+                for (int i = 0; i < size; i++) {
+                    ctx.fireChannelRead(out.get(i));
+                }
+                if (size > 0) {
+                    // Something was read, call fireChannelReadComplete()
+                    ctx.fireChannelReadComplete();
+                }
+                ctx.fireChannelInactive();
+            } finally {
+                // recycle in all cases
+                out.recycle();
             }
-            int size = out.size();
-            for (int i = 0; i < size; i ++) {
-                ctx.fireChannelRead(out.get(i));
-            }
-            ctx.fireChannelInactive();
-            out.recycle();
         }
     }
 
@@ -276,13 +284,12 @@ public abstract class ByteToMessageDecoder extends ChannelHandlerAdapter {
 
     /**
      * Decode the from one {@link ByteBuf} to an other. This method will be called till either the input
-     * {@link ByteBuf} has nothing to read anymore, till nothing was read from the input {@link ByteBuf} or till
-     * this method returns {@code null}.
+     * {@link ByteBuf} has nothing to read when return from this method or till nothing was read from the input
+     * {@link ByteBuf}.
      *
      * @param ctx           the {@link ChannelHandlerContext} which this {@link ByteToMessageDecoder} belongs to
      * @param in            the {@link ByteBuf} from which to read data
      * @param out           the {@link List} to which decoded messages should be added
-
      * @throws Exception    is thrown if an error accour
      */
     protected abstract void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception;

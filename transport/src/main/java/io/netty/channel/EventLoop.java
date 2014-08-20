@@ -29,6 +29,9 @@ public interface EventLoop extends EventExecutor, EventLoopGroup {
     @Override
     EventLoopGroup parent();
 
+    @Override
+    EventLoop unwrap();
+
     /**
      * Creates a new default {@link ChannelHandlerInvoker} implementation that uses this {@link EventLoop} to
      * invoke event handler methods.

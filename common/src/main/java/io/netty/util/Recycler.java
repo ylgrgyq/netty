@@ -164,7 +164,7 @@ public abstract class Recycler<T> {
         private final WeakReference<Thread> owner;
         private final int id = ID_GENERATOR.getAndIncrement();
 
-        public WeakOrderQueue(Stack<?> stack, Thread thread) {
+        WeakOrderQueue(Stack<?> stack, Thread thread) {
             head = tail = new Link();
             owner = new WeakReference<Thread>(thread);
             synchronized (stack) {
@@ -194,7 +194,7 @@ public abstract class Recycler<T> {
         }
 
         // transfer as many items as we can from this queue to the stack, returning true if any were transferred
-        @SuppressWarnings({ "unchecked", "rawtypes" })
+        @SuppressWarnings("rawtypes")
         boolean transfer(Stack<?> to) {
 
             Link head = this.head;
@@ -236,7 +236,7 @@ public abstract class Recycler<T> {
             }
             to.size = size;
 
-            if (end == LINK_CAPACITY & head.next != null) {
+            if (end == LINK_CAPACITY && head.next != null) {
                 this.head = head.next;
             }
 

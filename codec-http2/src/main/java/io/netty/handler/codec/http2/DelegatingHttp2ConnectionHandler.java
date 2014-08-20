@@ -38,12 +38,6 @@ public class DelegatingHttp2ConnectionHandler extends AbstractHttp2ConnectionHan
         this.observer = observer;
     }
 
-    public DelegatingHttp2ConnectionHandler(boolean server, boolean allowCompression,
-            Http2FrameObserver observer) {
-        super(server, allowCompression);
-        this.observer = observer;
-    }
-
     public DelegatingHttp2ConnectionHandler(Http2Connection connection,
             Http2FrameReader frameReader, Http2FrameWriter frameWriter,
             Http2InboundFlowController inboundFlow, Http2OutboundFlowController outboundFlow,
@@ -59,23 +53,22 @@ public class DelegatingHttp2ConnectionHandler extends AbstractHttp2ConnectionHan
 
     @Override
     public ChannelFuture writeData(ChannelHandlerContext ctx, ChannelPromise promise, int streamId,
-            ByteBuf data, int padding, boolean endStream, boolean endSegment, boolean compressed) {
-        return super.writeData(ctx, promise, streamId, data, padding, endStream, endSegment,
-                compressed);
+            ByteBuf data, int padding, boolean endStream) {
+        return super.writeData(ctx, promise, streamId, data, padding, endStream);
     }
 
     @Override
     public ChannelFuture writeHeaders(ChannelHandlerContext ctx, ChannelPromise promise,
-            int streamId, Http2Headers headers, int padding, boolean endStream, boolean endSegment) {
-        return super.writeHeaders(ctx, promise, streamId, headers, padding, endStream, endSegment);
+            int streamId, Http2Headers headers, int padding, boolean endStream) {
+        return super.writeHeaders(ctx, promise, streamId, headers, padding, endStream);
     }
 
     @Override
     public ChannelFuture writeHeaders(ChannelHandlerContext ctx, ChannelPromise promise,
             int streamId, Http2Headers headers, int streamDependency, short weight,
-            boolean exclusive, int padding, boolean endStream, boolean endSegment) {
+            boolean exclusive, int padding, boolean endStream) {
         return super.writeHeaders(ctx, promise, streamId, headers, streamDependency, weight,
-                exclusive, padding, endStream, endSegment);
+                exclusive, padding, endStream);
     }
 
     @Override
@@ -108,23 +101,17 @@ public class DelegatingHttp2ConnectionHandler extends AbstractHttp2ConnectionHan
     }
 
     @Override
-    public ChannelFuture writeAltSvc(ChannelHandlerContext ctx, ChannelPromise promise,
-            int streamId, long maxAge, int port, ByteBuf protocolId, String host, String origin) {
-        return super.writeAltSvc(ctx, promise, streamId, maxAge, port, protocolId, host, origin);
-    }
-
-    @Override
     public void onDataRead(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding,
-            boolean endOfStream, boolean endOfSegment, boolean compressed) throws Http2Exception {
-        observer.onDataRead(ctx, streamId, data, padding, endOfStream, endOfSegment, compressed);
+            boolean endOfStream) throws Http2Exception {
+        observer.onDataRead(ctx, streamId, data, padding, endOfStream);
     }
 
     @Override
     public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers,
-            int streamDependency, short weight, boolean exclusive, int padding, boolean endStream,
-            boolean endSegment) throws Http2Exception {
+            int streamDependency, short weight, boolean exclusive, int padding, boolean endStream)
+            throws Http2Exception {
         observer.onHeadersRead(ctx, streamId, headers, streamDependency, weight, exclusive,
-                padding, endStream, endSegment);
+                padding, endStream);
     }
 
     @Override
@@ -178,13 +165,8 @@ public class DelegatingHttp2ConnectionHandler extends AbstractHttp2ConnectionHan
     }
 
     @Override
-    public void onAltSvcRead(ChannelHandlerContext ctx, int streamId, long maxAge, int port,
-            ByteBuf protocolId, String host, String origin) throws Http2Exception {
-        observer.onAltSvcRead(ctx, streamId, maxAge, port, protocolId, host, origin);
-    }
-
-    @Override
-    public void onBlockedRead(ChannelHandlerContext ctx, int streamId) throws Http2Exception {
-        observer.onBlockedRead(ctx, streamId);
+    public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
+            ByteBuf payload) {
+        observer.onUnknownFrame(ctx, frameType, streamId, flags, payload);
     }
 }

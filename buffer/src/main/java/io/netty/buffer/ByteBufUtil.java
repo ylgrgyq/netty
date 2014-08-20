@@ -16,6 +16,8 @@
 package io.netty.buffer;
 
 import io.netty.util.CharsetUtil;
+import io.netty.util.Recycler;
+import io.netty.util.Recycler.Handle;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
@@ -42,6 +44,8 @@ public final class ByteBufUtil {
 
     static final ByteBufAllocator DEFAULT_ALLOCATOR;
 
+    private static final int THREAD_LOCAL_BUFFER_SIZE;
+
     static {
         final char[] DIGITS = "0123456789abcdef".toCharArray();
         for (int i = 0; i < 256; i ++) {
@@ -66,6 +70,9 @@ public final class ByteBufUtil {
         }
 
         DEFAULT_ALLOCATOR = alloc;
+
+        THREAD_LOCAL_BUFFER_SIZE = SystemPropertyUtil.getInt("io.netty.threadLocalDirectBufferSize", 64 * 1024);
+        logger.debug("-Dio.netty.threadLocalDirectBufferSize: {}", THREAD_LOCAL_BUFFER_SIZE);
     }
 
     /**
@@ -368,10 +375,19 @@ public final class ByteBufUtil {
      * is allocated via the {@link ByteBufAllocator}.
      */
     public static ByteBuf encodeString(ByteBufAllocator alloc, CharBuffer src, Charset charset) {
+        return encodeString0(alloc, false, src, charset);
+    }
+
+    static ByteBuf encodeString0(ByteBufAllocator alloc, boolean enforceHeap, CharBuffer src, Charset charset) {
         final CharsetEncoder encoder = CharsetUtil.getEncoder(charset);
         int length = (int) ((double) src.remaining() * encoder.maxBytesPerChar());
         boolean release = true;
-        final ByteBuf dst = alloc.buffer(length);
+        final ByteBuf dst;
+        if (enforceHeap) {
+            dst = alloc.heapBuffer(length);
+        } else {
+            dst = alloc.buffer(length);
+        }
         try {
             final ByteBuffer dstBuf = dst.internalNioBuffer(0, length);
             final int pos = dstBuf.position();
@@ -412,6 +428,90 @@ public final class ByteBufUtil {
             throw new IllegalStateException(x);
         }
         return dst.flip().toString();
+    }
+
+    /**
+     * Returns a cached thread-local direct buffer, if available.
+     *
+     * @return a cached thread-local direct buffer, if available.  {@code null} otherwise.
+     */
+    public static ByteBuf threadLocalDirectBuffer() {
+        if (THREAD_LOCAL_BUFFER_SIZE <= 0) {
+            return null;
+        }
+
+        if (PlatformDependent.hasUnsafe()) {
+            return ThreadLocalUnsafeDirectByteBuf.newInstance();
+        } else {
+            return ThreadLocalDirectByteBuf.newInstance();
+        }
+    }
+
+    static final class ThreadLocalUnsafeDirectByteBuf extends UnpooledUnsafeDirectByteBuf {
+
+        private static final Recycler<ThreadLocalUnsafeDirectByteBuf> RECYCLER =
+                new Recycler<ThreadLocalUnsafeDirectByteBuf>() {
+                    @Override
+                    protected ThreadLocalUnsafeDirectByteBuf newObject(Handle handle) {
+                        return new ThreadLocalUnsafeDirectByteBuf(handle);
+                    }
+                };
+
+        static ThreadLocalUnsafeDirectByteBuf newInstance() {
+            ThreadLocalUnsafeDirectByteBuf buf = RECYCLER.get();
+            buf.setRefCnt(1);
+            return buf;
+        }
+
+        private final Handle handle;
+
+        private ThreadLocalUnsafeDirectByteBuf(Handle handle) {
+            super(UnpooledByteBufAllocator.DEFAULT, 256, Integer.MAX_VALUE);
+            this.handle = handle;
+        }
+
+        @Override
+        protected void deallocate() {
+            if (capacity() > THREAD_LOCAL_BUFFER_SIZE) {
+                super.deallocate();
+            } else {
+                clear();
+                RECYCLER.recycle(this, handle);
+            }
+        }
+    }
+
+    static final class ThreadLocalDirectByteBuf extends UnpooledDirectByteBuf {
+
+        private static final Recycler<ThreadLocalDirectByteBuf> RECYCLER = new Recycler<ThreadLocalDirectByteBuf>() {
+            @Override
+            protected ThreadLocalDirectByteBuf newObject(Handle handle) {
+                return new ThreadLocalDirectByteBuf(handle);
+            }
+        };
+
+        static ThreadLocalDirectByteBuf newInstance() {
+            ThreadLocalDirectByteBuf buf = RECYCLER.get();
+            buf.setRefCnt(1);
+            return buf;
+        }
+
+        private final Handle handle;
+
+        private ThreadLocalDirectByteBuf(Handle handle) {
+            super(UnpooledByteBufAllocator.DEFAULT, 256, Integer.MAX_VALUE);
+            this.handle = handle;
+        }
+
+        @Override
+        protected void deallocate() {
+            if (capacity() > THREAD_LOCAL_BUFFER_SIZE) {
+                super.deallocate();
+            } else {
+                clear();
+                RECYCLER.recycle(this, handle);
+            }
+        }
     }
 
     private ByteBufUtil() { }

@@ -31,7 +31,7 @@ final class VoidChannelPromise extends AbstractFuture<Void> implements ChannelPr
      *
      * @param channel the {@link Channel} associated with this future
      */
-    public VoidChannelPromise(Channel channel, boolean fireException) {
+    VoidChannelPromise(Channel channel, boolean fireException) {
         if (channel == null) {
             throw new NullPointerException("channel");
         }
@@ -191,6 +191,27 @@ final class VoidChannelPromise extends AbstractFuture<Void> implements ChannelPr
     @Override
     public Void getNow() {
         return null;
+    }
+
+    @Override
+    public ChannelPromise unvoid() {
+        ChannelPromise promise = new DefaultChannelPromise(channel);
+        if (fireException) {
+            promise.addListener(new ChannelFutureListener() {
+                @Override
+                public void operationComplete(ChannelFuture future) throws Exception {
+                    if (!future.isSuccess()) {
+                        fireException(future.cause());
+                    }
+                }
+            });
+        }
+        return promise;
+    }
+
+    @Override
+    public boolean isVoid() {
+        return true;
     }
 
     private void fireException(Throwable cause) {

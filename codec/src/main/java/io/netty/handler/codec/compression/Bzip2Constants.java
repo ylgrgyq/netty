@@ -16,7 +16,7 @@
 package io.netty.handler.codec.compression;
 
 /**
- * Constants for {@link Bzip2Decoder}.
+ * Constants for both the {@link Bzip2Encoder} and the {@link Bzip2Decoder}.
  */
 final class Bzip2Constants {
 
@@ -28,12 +28,14 @@ final class Bzip2Constants {
     /**
      * Block header magic number. Equals to BCD (pi).
      */
-    static final long COMPRESSED_MAGIC = 0x314159265359L;
+    static final int BLOCK_HEADER_MAGIC_1 = 0x314159;
+    static final int BLOCK_HEADER_MAGIC_2 = 0x265359;
 
     /**
      * End of stream magic number. Equals to BCD sqrt(pi).
      */
-    static final long END_OF_STREAM_MAGIC = 0x177245385090L;
+    static final int END_OF_STREAM_MAGIC_1 = 0x177245;
+    static final int END_OF_STREAM_MAGIC_2 = 0x385090;
 
     /**
      * Base block size.
@@ -67,6 +69,16 @@ final class Bzip2Constants {
      */
     static final int HUFFMAN_SYMBOL_RUNA = 0;
     static final int HUFFMAN_SYMBOL_RUNB = 1;
+
+    /**
+     * Huffman symbols range size for Huffman used map.
+     */
+    static final int HUFFMAN_SYMBOL_RANGE_SIZE = 16;
+
+    /**
+     * Maximum length of zero-terminated bit runs of MTF'ed Huffman table.
+     */
+    static final int HUFFMAN_SELECTOR_LIST_MAX_LENGTH = 6;
 
     /**
      * Number of symbols decoded after which a new Huffman table is selected.

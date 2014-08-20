@@ -14,12 +14,24 @@
  * under the License.
  */
 #include <jni.h>
-
+#include <limits.h>
 
 #define EPOLL_READ 0x01
 #define EPOLL_WRITE 0x02
 #define EPOLL_ACCEPT 0x04
 #define EPOLL_RDHUP 0x08
+
+// Define SO_REUSEPORT if not found to fix build issues.
+// See https://github.com/netty/netty/issues/2558
+#ifndef SO_REUSEPORT
+#define SO_REUSEPORT 15
+#endif /* SO_REUSEPORT */
+
+// Define IOV_MAX if not found to limit the iov size on writev calls
+// See https://github.com/netty/netty/issues/2647
+#ifndef IOV_MAX
+#define IOV_MAX 1024
+#endif /* IOV_MAX */
 
 jint Java_io_netty_channel_epoll_Native_eventFd(JNIEnv * env, jclass clazz);
 void Java_io_netty_channel_epoll_Native_eventFdWrite(JNIEnv * env, jclass clazz, jint fd, jlong value);
@@ -32,7 +44,7 @@ void  Java_io_netty_channel_epoll_Native_epollCtlDel(JNIEnv * env, jclass clazz,
 jint Java_io_netty_channel_epoll_Native_write(JNIEnv * env, jclass clazz, jint fd, jobject jbuffer, jint pos, jint limit);
 jint Java_io_netty_channel_epoll_Native_writeAddress(JNIEnv * env, jclass clazz, jint fd, jlong address, jint pos, jint limit);
 jlong Java_io_netty_channel_epoll_Native_writev(JNIEnv * env, jclass clazz, jint fd, jobjectArray buffers, jint offset, jint length);
-jlong Java_io_netty_channel_epoll_Native_writevAddresses(JNIEnv * env, jclass clazz, jint fd, jobjectArray addresses, jint offset, jint length);
+jlong Java_io_netty_channel_epoll_Native_writevAddresses(JNIEnv * env, jclass clazz, jint fd, jlong memoryAddress, jint length);
 jint Java_io_netty_channel_epoll_Native_sendTo(JNIEnv * env, jclass clazz, jint fd, jobject jbuffer, jint pos, jint limit, jbyteArray address, jint scopeId, jint port);
 jint Java_io_netty_channel_epoll_Native_sendToAddress(JNIEnv * env, jclass clazz, jint fd, jlong memoryAddress, jint pos, jint limit, jbyteArray address, jint scopeId, jint port);
 
@@ -50,7 +62,7 @@ void Java_io_netty_channel_epoll_Native_listen(JNIEnv * env, jclass clazz, jint 
 jboolean Java_io_netty_channel_epoll_Native_connect(JNIEnv * env, jclass clazz, jint fd, jbyteArray address, jint scopeId, jint port);
 jboolean Java_io_netty_channel_epoll_Native_finishConnect(JNIEnv * env, jclass clazz, jint fd);
 jint Java_io_netty_channel_epoll_Native_accept(JNIEnv * env, jclass clazz, jint fd);
-jlong Java_io_netty_channel_epoll_Native_sendfile(JNIEnv *env, jclass clazz, jint fd, jobject fileRegion, jlong off, jlong len);
+jlong Java_io_netty_channel_epoll_Native_sendfile(JNIEnv *env, jclass clazz, jint fd, jobject fileRegion, jlong base_off, jlong off, jlong len);
 jobject Java_io_netty_channel_epoll_Native_remoteAddress(JNIEnv * env, jclass clazz, jint fd);
 jobject Java_io_netty_channel_epoll_Native_localAddress(JNIEnv * env, jclass clazz, jint fd);
 void Java_io_netty_channel_epoll_Native_setReuseAddress(JNIEnv * env, jclass clazz, jint fd, jint optval);
@@ -81,3 +93,4 @@ jint Java_io_netty_channel_epoll_Native_getTcpKeepIntvl(JNIEnv *env, jclass claz
 jint Java_io_netty_channel_epoll_Native_getTcpKeepCnt(JNIEnv *env, jclass clazz, jint fd);
 
 jstring Java_io_netty_channel_epoll_Native_kernelVersion(JNIEnv *env, jclass clazz);
+jint Java_io_netty_channel_epoll_Native_iovMax(JNIEnv *env, jclass clazz);

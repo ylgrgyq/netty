@@ -289,7 +289,6 @@ public class CompositeByteBuf extends AbstractReferenceCountedByteBuf {
             ByteBuf consolidated = allocBuffer(capacity);
 
             // We're not using foreach to avoid creating an iterator.
-            // noinspection ForLoopReplaceableByForEach
             for (int i = 0; i < numComponents; i ++) {
                 Component c = components.get(i);
                 ByteBuf b = c.buf;
@@ -1098,7 +1097,6 @@ public class CompositeByteBuf extends AbstractReferenceCountedByteBuf {
         } else {
             int count = 0;
             int componentsCount = components.size();
-            //noinspection ForLoopReplaceableByForEach
             for (int i = 0; i < componentsCount; i++) {
                 Component c = components.get(i);
                 count += c.buf.nioBufferCount();
@@ -1321,7 +1319,7 @@ public class CompositeByteBuf extends AbstractReferenceCountedByteBuf {
         return result + ", components=" + components.size() + ')';
     }
 
-    private final class Component {
+    private static final class Component {
         final ByteBuf buf;
         final int length;
         int offset;
@@ -1601,8 +1599,11 @@ public class CompositeByteBuf extends AbstractReferenceCountedByteBuf {
         }
 
         freed = true;
-        for (Component c: components) {
-            c.freeIfNecessary();
+        int size = components.size();
+        // We're not using foreach to avoid creating an iterator.
+        // see https://github.com/netty/netty/issues/2642
+        for (int i = 0; i < size; i++) {
+            components.get(i).freeIfNecessary();
         }
 
         if (leak != null) {

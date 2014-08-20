@@ -17,6 +17,7 @@
 package io.netty.channel;
 
 import io.netty.buffer.ByteBufUtil;
+import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.ThreadLocalRandom;
@@ -48,8 +49,10 @@ final class DefaultChannelId implements ChannelId {
     private static final Pattern MACHINE_ID_PATTERN = Pattern.compile("^(?:[0-9a-fA-F][:-]?){6,8}$");
     private static final int MACHINE_ID_LEN = 8;
     private static final byte[] MACHINE_ID;
-    private static final int PROCESS_ID_LEN = 2;
-    private static final int MAX_PROCESS_ID = 65535;
+    private static final int PROCESS_ID_LEN = 4;
+    // Maximal value for 64bit systems is 2^22.  See man 5 proc.
+    // See https://github.com/netty/netty/issues/2706
+    private static final int MAX_PROCESS_ID = 4194304;
     private static final int PROCESS_ID;
     private static final int SEQUENCE_LEN = 4;
     private static final int TIMESTAMP_LEN = 8;
@@ -64,26 +67,6 @@ final class DefaultChannelId implements ChannelId {
     }
 
     static {
-        byte[] machineId = null;
-        String customMachineId = SystemPropertyUtil.get("io.netty.machineId");
-        if (customMachineId != null) {
-            if (MACHINE_ID_PATTERN.matcher(customMachineId).matches()) {
-                machineId = parseMachineId(customMachineId);
-                logger.debug("-Dio.netty.machineId: {} (user-set)", customMachineId);
-            } else {
-                logger.warn("-Dio.netty.machineId: {} (malformed)", customMachineId);
-            }
-        }
-
-        if (machineId == null) {
-            machineId = defaultMachineId();
-            if (logger.isDebugEnabled()) {
-                logger.debug("-Dio.netty.machineId: {} (auto-detected)", formatAddress(machineId));
-            }
-        }
-
-        MACHINE_ID = machineId;
-
         int processId = -1;
         String customProcessId = SystemPropertyUtil.get("io.netty.processId");
         if (customProcessId != null) {
@@ -109,6 +92,26 @@ final class DefaultChannelId implements ChannelId {
         }
 
         PROCESS_ID = processId;
+
+        byte[] machineId = null;
+        String customMachineId = SystemPropertyUtil.get("io.netty.machineId");
+        if (customMachineId != null) {
+            if (MACHINE_ID_PATTERN.matcher(customMachineId).matches()) {
+                machineId = parseMachineId(customMachineId);
+                logger.debug("-Dio.netty.machineId: {} (user-set)", customMachineId);
+            } else {
+                logger.warn("-Dio.netty.machineId: {} (malformed)", customMachineId);
+            }
+        }
+
+        if (machineId == null) {
+            machineId = defaultMachineId();
+            if (logger.isDebugEnabled()) {
+                logger.debug("-Dio.netty.machineId: {} (auto-detected)", formatAddress(machineId));
+            }
+        }
+
+        MACHINE_ID = machineId;
     }
 
     @SuppressWarnings("DynamicRegexReplaceableByCompiledPattern")
@@ -309,17 +312,17 @@ final class DefaultChannelId implements ChannelId {
             Class<?> mgmtFactoryType = Class.forName("java.lang.management.ManagementFactory", true, loader);
             Class<?> runtimeMxBeanType = Class.forName("java.lang.management.RuntimeMXBean", true, loader);
 
-            Method getRuntimeMXBean = mgmtFactoryType.getMethod("getRuntimeMXBean", null);
-            Object bean = getRuntimeMXBean.invoke(null, null);
-            Method getName = runtimeMxBeanType.getDeclaredMethod("getName");
-            value = (String) getName.invoke(bean, null);
+            Method getRuntimeMXBean = mgmtFactoryType.getMethod("getRuntimeMXBean", EmptyArrays.EMPTY_CLASSES);
+            Object bean = getRuntimeMXBean.invoke(null, EmptyArrays.EMPTY_OBJECTS);
+            Method getName = runtimeMxBeanType.getDeclaredMethod("getName", EmptyArrays.EMPTY_CLASSES);
+            value = (String) getName.invoke(bean, EmptyArrays.EMPTY_OBJECTS);
         } catch (Exception e) {
             logger.debug("Could not invoke ManagementFactory.getRuntimeMXBean().getName(); Android?", e);
             try {
                 // Invoke android.os.Process.myPid()
                 Class<?> processType = Class.forName("android.os.Process", true, loader);
-                Method myPid = processType.getMethod("myPid", null);
-                value = myPid.invoke(null, null).toString();
+                Method myPid = processType.getMethod("myPid", EmptyArrays.EMPTY_CLASSES);
+                value = myPid.invoke(null, EmptyArrays.EMPTY_OBJECTS).toString();
             } catch (Exception e2) {
                 logger.debug("Could not invoke Process.myPid(); not Android?", e2);
                 value = "";
@@ -361,7 +364,7 @@ final class DefaultChannelId implements ChannelId {
         i += MACHINE_ID_LEN;
 
         // processId
-        i = writeShort(i, PROCESS_ID);
+        i = writeInt(i, PROCESS_ID);
 
         // sequence
         i = writeInt(i, nextSequence.getAndIncrement());
@@ -375,12 +378,6 @@ final class DefaultChannelId implements ChannelId {
         i = writeInt(i, random);
 
         assert i == data.length;
-    }
-
-    private int writeShort(int i, int value) {
-        data[i ++] = (byte) (value >>> 8);
-        data[i ++] = (byte) value;
-        return i;
     }
 
     private int writeInt(int i, int value) {

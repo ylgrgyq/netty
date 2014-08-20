@@ -17,11 +17,10 @@ package io.netty.buffer;
 
 import io.netty.util.CharsetUtil;
 import io.netty.util.IllegalReferenceCountException;
+import io.netty.util.internal.ThreadLocalRandom;
 import org.junit.After;
-import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
@@ -1477,6 +1476,7 @@ public abstract class AbstractByteBufTest {
     }
 
     @Test
+    @SuppressWarnings("ObjectEqualsNull")
     public void testEquals() {
         assertFalse(buffer.equals(null));
         assertFalse(buffer.equals(new Object()));
@@ -1728,7 +1728,6 @@ public abstract class AbstractByteBufTest {
         assertThat(lastIndex.get(), is(CAPACITY / 4));
     }
 
-    @Ignore
     @Test
     public void testInternalNioBuffer() {
         testInternalNioBuffer(128);
@@ -1744,15 +1743,15 @@ public abstract class AbstractByteBufTest {
         ByteBuffer buf = buffer.internalNioBuffer(0, 1);
         assertEquals(1, buf.remaining());
 
-        for (int i = 0; i < a; i++) {
-            buffer.writeByte(i);
-        }
+        byte[] data = new byte[a];
+        ThreadLocalRandom.current().nextBytes(data);
+        buffer.writeBytes(data);
 
         buf = buffer.internalNioBuffer(0, a);
         assertEquals(a, buf.remaining());
 
         for (int i = 0; i < a; i++) {
-            assertEquals((byte) i, buf.get());
+            assertEquals(data[i], buf.get());
         }
         assertFalse(buf.hasRemaining());
     }
@@ -1796,7 +1795,7 @@ public abstract class AbstractByteBufTest {
                                 return;
                             }
                         }
-                        Assert.assertArrayEquals(bytes, channel.writtenBytes());
+                        assertArrayEquals(bytes, channel.writtenBytes());
                         latch.countDown();
                     }
                     try {
@@ -1850,7 +1849,7 @@ public abstract class AbstractByteBufTest {
                                 return;
                             }
                         }
-                        Assert.assertArrayEquals(bytes, out.toByteArray());
+                        assertArrayEquals(bytes, out.toByteArray());
                         latch.countDown();
                     }
                     try {
@@ -1899,11 +1898,11 @@ public abstract class AbstractByteBufTest {
                         byte[] array = new byte[8];
                         buf.readBytes(array);
 
-                        Assert.assertArrayEquals(bytes, array);
+                        assertArrayEquals(bytes, array);
 
                         Arrays.fill(array, (byte) 0);
                         buf.getBytes(0, array);
-                        Assert.assertArrayEquals(bytes, array);
+                        assertArrayEquals(bytes, array);
 
                         latch.countDown();
                     }
@@ -1929,6 +1928,7 @@ public abstract class AbstractByteBufTest {
     }
 
     @Test
+    @SuppressWarnings("ForLoopThatDoesntUseLoopVariable")
     public void testNioBufferExposeOnlyRegion() {
         final ByteBuf buffer = releaseLater(newBuffer(8));
         byte[] data = new byte[8];

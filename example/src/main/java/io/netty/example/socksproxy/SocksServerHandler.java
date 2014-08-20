@@ -18,42 +18,65 @@ package io.netty.example.socksproxy;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.handler.codec.socks.SocksAuthResponse;
-import io.netty.handler.codec.socks.SocksAuthScheme;
-import io.netty.handler.codec.socks.SocksAuthStatus;
-import io.netty.handler.codec.socks.SocksCmdRequest;
-import io.netty.handler.codec.socks.SocksCmdRequestDecoder;
-import io.netty.handler.codec.socks.SocksCmdType;
-import io.netty.handler.codec.socks.SocksInitResponse;
-import io.netty.handler.codec.socks.SocksRequest;
-
+import io.netty.handler.codec.socksx.SocksRequest;
+import io.netty.handler.codec.socksx.v4.Socks4CmdRequest;
+import io.netty.handler.codec.socksx.v4.Socks4CmdType;
+import io.netty.handler.codec.socksx.v5.Socks5AuthScheme;
+import io.netty.handler.codec.socksx.v5.Socks5CmdRequestDecoder;
+import io.netty.handler.codec.socksx.v5.Socks5InitResponse;
+import io.netty.handler.codec.socksx.v5.Socks5Request;
+import io.netty.handler.codec.socksx.v5.Socks5AuthResponse;
+import io.netty.handler.codec.socksx.v5.Socks5AuthStatus;
+import io.netty.handler.codec.socksx.v5.Socks5CmdRequest;
+import io.netty.handler.codec.socksx.v5.Socks5CmdType;
 
 @ChannelHandler.Sharable
 public final class SocksServerHandler extends SimpleChannelInboundHandler<SocksRequest> {
 
+    public static final SocksServerHandler INSTANCE = new SocksServerHandler();
+
+    private SocksServerHandler() { }
+
     @Override
-    public void messageReceived(ChannelHandlerContext ctx, SocksRequest socksRequest) {
-        switch (socksRequest.requestType()) {
-            case INIT: {
-                // auth support example
-                //ctx.pipeline().addFirst(new SocksAuthRequestDecoder());
-                //ctx.write(new SocksInitResponse(SocksAuthScheme.AUTH_PASSWORD));
-                ctx.pipeline().addFirst(new SocksCmdRequestDecoder());
-                ctx.write(new SocksInitResponse(SocksAuthScheme.NO_AUTH));
-                break;
-            }
-            case AUTH:
-                ctx.pipeline().addFirst(new SocksCmdRequestDecoder());
-                ctx.write(new SocksAuthResponse(SocksAuthStatus.SUCCESS));
-                break;
-            case CMD:
-                SocksCmdRequest req = (SocksCmdRequest) socksRequest;
-                if (req.cmdType() == SocksCmdType.CONNECT) {
+    public void messageReceived(ChannelHandlerContext ctx, SocksRequest socksRequest) throws Exception {
+        switch (socksRequest.protocolVersion()) {
+            case SOCKS4a:
+                Socks4CmdRequest socksV4CmdRequest = (Socks4CmdRequest) socksRequest;
+                if (socksV4CmdRequest.cmdType() == Socks4CmdType.CONNECT) {
                     ctx.pipeline().addLast(new SocksServerConnectHandler());
                     ctx.pipeline().remove(this);
                     ctx.fireChannelRead(socksRequest);
                 } else {
                     ctx.close();
+                }
+                break;
+            case SOCKS5:
+                switch (((Socks5Request) socksRequest).requestType()) {
+                    case INIT: {
+                        // auth support example
+                        //ctx.pipeline().addFirst(new SocksV5AuthRequestDecoder());
+                        //ctx.write(new SocksV5InitResponse(SocksV5AuthScheme.AUTH_PASSWORD));
+                        ctx.pipeline().addFirst(new Socks5CmdRequestDecoder());
+                        ctx.write(new Socks5InitResponse(Socks5AuthScheme.NO_AUTH));
+                        break;
+                    }
+                    case AUTH:
+                        ctx.pipeline().addFirst(new Socks5CmdRequestDecoder());
+                        ctx.write(new Socks5AuthResponse(Socks5AuthStatus.SUCCESS));
+                        break;
+                    case CMD:
+                        Socks5CmdRequest socks5CmdRequest = (Socks5CmdRequest) socksRequest;
+                        if (socks5CmdRequest.cmdType() == Socks5CmdType.CONNECT) {
+                            ctx.pipeline().addLast(new SocksServerConnectHandler());
+                            ctx.pipeline().remove(this);
+                            ctx.fireChannelRead(socksRequest);
+                        } else {
+                            ctx.close();
+                        }
+                        break;
+                    case UNKNOWN:
+                        ctx.close();
+                        break;
                 }
                 break;
             case UNKNOWN:

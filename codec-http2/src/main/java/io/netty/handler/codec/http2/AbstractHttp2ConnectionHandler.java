@@ -15,7 +15,6 @@
 
 package io.netty.handler.codec.http2;
 
-import static io.netty.handler.codec.http2.Http2CodecUtil.CONNECTION_STREAM_ID;
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_PRIORITY_WEIGHT;
 import static io.netty.handler.codec.http2.Http2CodecUtil.HTTP_UPGRADE_STREAM_ID;
 import static io.netty.handler.codec.http2.Http2CodecUtil.connectionPrefaceBuf;
@@ -40,7 +39,7 @@ import io.netty.handler.codec.ByteToMessageDecoder;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -74,11 +73,7 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     private ChannelFutureListener closeListener;
 
     protected AbstractHttp2ConnectionHandler(boolean server) {
-        this(server, false);
-    }
-
-    protected AbstractHttp2ConnectionHandler(boolean server, boolean allowCompression) {
-        this(new DefaultHttp2Connection(server, allowCompression));
+        this(new DefaultHttp2Connection(server));
     }
 
     protected AbstractHttp2ConnectionHandler(Http2Connection connection) {
@@ -127,8 +122,7 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
         }
 
         // Create a local stream used for the HTTP cleartext upgrade.
-        createLocalStream(HTTP_UPGRADE_STREAM_ID, true, CONNECTION_STREAM_ID,
-                DEFAULT_PRIORITY_WEIGHT, false);
+        createLocalStream(HTTP_UPGRADE_STREAM_ID, true);
     }
 
     /**
@@ -149,8 +143,7 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
         applyRemoteSettings(settings);
 
         // Create a stream in the half-closed state.
-        createRemoteStream(HTTP_UPGRADE_STREAM_ID, true, CONNECTION_STREAM_ID,
-                DEFAULT_PRIORITY_WEIGHT, false);
+        createRemoteStream(HTTP_UPGRADE_STREAM_ID, true);
     }
 
     @Override
@@ -189,8 +182,9 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         ChannelFuture future = ctx.newSucceededFuture();
-        for (Http2Stream stream : connection.activeStreams().toArray(new Http2Stream[0])) {
-            close(stream, future);
+        final Collection<Http2Stream> streams = connection.activeStreams();
+        for (Http2Stream s : streams.toArray(new Http2Stream[streams.size()])) {
+            close(s, future);
         }
         super.channelInactive(ctx);
     }
@@ -213,10 +207,11 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
      */
     public final Http2Settings settings() {
         Http2Settings settings = new Http2Settings();
-        settings.allowCompressedData(connection.local().allowCompressedData());
         settings.initialWindowSize(inboundFlow.initialInboundWindowSize());
         settings.maxConcurrentStreams(connection.remote().maxStreams());
-        settings.maxHeaderTableSize(frameReader.maxHeaderTableSize());
+        settings.headerTableSize(frameReader.maxHeaderTableSize());
+        settings.maxFrameSize(frameReader.maxFrameSize());
+        settings.maxHeaderListSize(frameReader.maxHeaderListSize());
         if (!connection.isServer()) {
             // Only set the pushEnabled flag if this is a client endpoint.
             settings.pushEnabled(connection.local().allowPushTo());
@@ -229,7 +224,7 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
      */
     @Override
     public void onDataRead(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding,
-            boolean endOfStream, boolean endOfSegment, boolean compressed) throws Http2Exception {
+            boolean endOfStream) throws Http2Exception {
     }
 
     /**
@@ -239,7 +234,7 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
      */
     @Override
     public final void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers,
-            int padding, boolean endStream, boolean endSegment) throws Http2Exception {
+            int padding, boolean endStream) throws Http2Exception {
     }
 
     /**
@@ -247,8 +242,8 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
      */
     @Override
     public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers,
-            int streamDependency, short weight, boolean exclusive, int padding, boolean endStream,
-            boolean endSegment) throws Http2Exception {
+            int streamDependency, short weight, boolean exclusive, int padding, boolean endStream)
+            throws Http2Exception {
     }
 
     /**
@@ -324,15 +319,8 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
      * Default implementation. Does nothing.
      */
     @Override
-    public void onAltSvcRead(ChannelHandlerContext ctx, int streamId, long maxAge, int port,
-            ByteBuf protocolId, String host, String origin) throws Http2Exception {
-    }
-
-    /**
-     * Default implementation. Does nothing.
-     */
-    @Override
-    public void onBlockedRead(ChannelHandlerContext ctx, int streamId) throws Http2Exception {
+    public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
+            ByteBuf payload) {
     }
 
     protected final ChannelHandlerContext ctx() {
@@ -346,28 +334,24 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     /**
      * Gets the next stream ID that can be created by the local endpoint.
      */
-    protected final int nextStreamId() {
+    public final int nextStreamId() {
         return connection.local().nextStreamId();
     }
 
     protected ChannelFuture writeData(final ChannelHandlerContext ctx,
             final ChannelPromise promise, int streamId, final ByteBuf data, int padding,
-            boolean endStream, boolean endSegment, boolean compressed) {
+            boolean endStream) {
         try {
             if (connection.isGoAway()) {
                 throw protocolError("Sending data after connection going away.");
-            }
-
-            if (!connection.remote().allowCompressedData() && compressed) {
-                throw protocolError("compression is disallowed for remote endpoint.");
             }
 
             Http2Stream stream = connection.requireStream(streamId);
             stream.verifyState(PROTOCOL_ERROR, OPEN, HALF_CLOSED_REMOTE);
 
             // Hand control of the frame to the flow controller.
-            outboundFlow.sendFlowControlled(streamId, data, padding, endStream, endSegment,
-                    compressed, new FlowControlWriter(ctx, data, promise));
+            outboundFlow.sendFlowControlled(streamId, data, padding, endStream,
+                    new FlowControlWriter(ctx, data, promise));
 
             return promise;
         } catch (Http2Exception e) {
@@ -376,14 +360,14 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     }
 
     protected ChannelFuture writeHeaders(ChannelHandlerContext ctx, ChannelPromise promise,
-            int streamId, Http2Headers headers, int padding, boolean endStream, boolean endSegment) {
+            int streamId, Http2Headers headers, int padding, boolean endStream) {
         return writeHeaders(ctx, promise, streamId, headers, 0, DEFAULT_PRIORITY_WEIGHT, false,
-                padding, endStream, endSegment);
+                padding, endStream);
     }
 
     protected ChannelFuture writeHeaders(ChannelHandlerContext ctx, ChannelPromise promise,
             int streamId, Http2Headers headers, int streamDependency, short weight,
-            boolean exclusive, int padding, boolean endStream, boolean endSegment) {
+            boolean exclusive, int padding, boolean endStream) {
         try {
             if (connection.isGoAway()) {
                 throw protocolError("Sending headers after connection going away.");
@@ -392,7 +376,7 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
             Http2Stream stream = connection.stream(streamId);
             if (stream == null) {
                 // Create a new locally-initiated stream.
-                stream = createLocalStream(streamId, endStream, streamDependency, weight, exclusive);
+                stream = createLocalStream(streamId, endStream);
             } else {
                 // An existing stream...
                 if (stream.state() == RESERVED_LOCAL) {
@@ -408,15 +392,17 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
                         stream.setPriority(streamDependency, weight, exclusive);
                     }
                 }
-
-                // If the headers are the end of the stream, close it now.
-                if (endStream) {
-                    closeLocalSide(stream, promise);
-                }
             }
 
-            return frameWriter.writeHeaders(ctx, promise, streamId, headers, streamDependency,
-                    weight, exclusive, padding, endStream, endSegment);
+            ChannelFuture future = frameWriter.writeHeaders(ctx, promise, streamId, headers, streamDependency,
+                    weight, exclusive, padding, endStream);
+
+            // If the headers are the end of the stream, close it now.
+            if (endStream) {
+                closeLocalSide(stream, promise);
+            }
+
+            return future;
         } catch (Http2Exception e) {
             return promise.setFailure(e);
         }
@@ -448,10 +434,12 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
             return promise;
         }
 
+        ChannelFuture future = frameWriter.writeRstStream(ctx, promise, streamId, errorCode);
+
         stream.terminateSent();
         close(stream, promise);
 
-        return frameWriter.writeRstStream(ctx, promise, streamId, errorCode);
+        return future;
     }
 
     protected ChannelFuture writeSettings(ChannelHandlerContext ctx, ChannelPromise promise,
@@ -462,7 +450,8 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
                 throw protocolError("Sending settings after connection going away.");
             }
 
-            if (settings.hasPushEnabled() && connection.isServer()) {
+            Boolean pushEnabled = settings.pushEnabled();
+            if (pushEnabled != null && connection.isServer()) {
                 throw protocolError("Server sending SETTINGS frame with ENABLE_PUSH specified");
             }
 
@@ -505,15 +494,6 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
         }
     }
 
-    protected ChannelFuture writeAltSvc(ChannelHandlerContext ctx, ChannelPromise promise,
-            int streamId, long maxAge, int port, ByteBuf protocolId, String host, String origin) {
-        if (!connection.isServer()) {
-            return promise.setFailure(protocolError("Client sending ALT_SVC frame"));
-        }
-        return frameWriter.writeAltSvc(ctx, promise, streamId, maxAge, port, protocolId, host,
-                        origin);
-    }
-
     @Override
     protected final void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out)
             throws Exception {
@@ -528,12 +508,15 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
             frameReader.readFrame(ctx, in, internalFrameObserver);
         } catch (Http2Exception e) {
             onHttp2Exception(ctx, e);
+        } catch (Throwable e) {
+            onHttp2Exception(ctx, new Http2Exception(Http2Error.INTERNAL_ERROR, e.getMessage(), e));
         }
     }
 
     /**
      * Processes the given exception. Depending on the type of exception, delegates to either
-     * {@link #processConnectionError} or {@link #processStreamError}.
+     * {@link #onConnectionError(ChannelHandlerContext, Http2Exception)} or
+     * {@link #onStreamError(ChannelHandlerContext, Http2StreamException)}.
      */
     protected final void onHttp2Exception(ChannelHandlerContext ctx, Http2Exception e) {
         if (e instanceof Http2StreamException) {
@@ -694,26 +677,6 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     }
 
     /**
-     * Closes the remote side of the given stream. If this causes the stream to be closed, adds a
-     * hook to close the channel after the given future completes.
-     *
-     * @param stream the stream to be half closed.
-     * @param future If closing, the future after which to close the channel. If {@code null},
-     *            ignored.
-     */
-    private void closeRemoteSide(Http2Stream stream, ChannelFuture future) {
-        switch (stream.state()) {
-            case HALF_CLOSED_REMOTE:
-            case OPEN:
-                stream.closeRemoteSide();
-                break;
-            default:
-                close(stream, future);
-                break;
-        }
-    }
-
-    /**
      * Closes the given stream and adds a hook to close the channel after the given future completes.
      *
      * @param stream the stream to be closed.
@@ -730,18 +693,9 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     }
 
     /**
-     * Verifies that the HTTP/2 connection preface has been received from the remote endpoint.
-     */
-    private void verifyPrefaceReceived() throws Http2Exception {
-        if (!prefaceReceived) {
-            throw protocolError("Received non-SETTINGS as first frame.");
-        }
-    }
-
-    /**
      * Sends the HTTP/2 connection preface upon establishment of the connection, if not already sent.
      */
-    private void sendPreface(final ChannelHandlerContext ctx) throws Http2Exception {
+    private void sendPreface(final ChannelHandlerContext ctx) {
         if (prefaceSent || !ctx.channel().isActive()) {
             return;
         }
@@ -761,74 +715,60 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
     }
 
     /**
-     * Applies settings sent from the local endpoint.
-     */
-    private void applyLocalSettings(Http2Settings settings) throws Http2Exception {
-        if (settings.hasPushEnabled()) {
-            if (connection.isServer()) {
-                throw protocolError("Server sending SETTINGS frame with ENABLE_PUSH specified");
-            }
-            connection.local().allowPushTo(settings.pushEnabled());
-        }
-
-        if (settings.hasAllowCompressedData()) {
-            connection.local().allowCompressedData(settings.allowCompressedData());
-        }
-
-        if (settings.hasMaxConcurrentStreams()) {
-            connection.remote().maxStreams(settings.maxConcurrentStreams());
-        }
-
-        if (settings.hasMaxHeaderTableSize()) {
-            frameReader.maxHeaderTableSize(settings.maxHeaderTableSize());
-        }
-
-        if (settings.hasInitialWindowSize()) {
-            inboundFlow.initialInboundWindowSize(settings.initialWindowSize());
-        }
-    }
-
-    /**
      * Applies settings received from the remote endpoint.
      */
     private void applyRemoteSettings(Http2Settings settings) throws Http2Exception {
-        if (settings.hasPushEnabled()) {
+        Boolean pushEnabled = settings.pushEnabled();
+        if (pushEnabled != null) {
             if (!connection.isServer()) {
                 throw protocolError("Client received SETTINGS frame with ENABLE_PUSH specified");
             }
-            connection.remote().allowPushTo(settings.pushEnabled());
+            connection.remote().allowPushTo(pushEnabled);
         }
 
-        if (settings.hasAllowCompressedData()) {
-            connection.remote().allowCompressedData(settings.allowCompressedData());
+        Long maxConcurrentStreams = settings.maxConcurrentStreams();
+        if (maxConcurrentStreams != null) {
+            int value = (int) Math.min(maxConcurrentStreams, Integer.MAX_VALUE);
+            connection.local().maxStreams(value);
         }
 
-        if (settings.hasMaxConcurrentStreams()) {
-            connection.local().maxStreams(settings.maxConcurrentStreams());
+        Long headerTableSize = settings.headerTableSize();
+        if (headerTableSize != null) {
+            frameWriter.maxHeaderTableSize(headerTableSize);
         }
 
-        if (settings.hasMaxHeaderTableSize()) {
-            frameWriter.maxHeaderTableSize(settings.maxHeaderTableSize());
+        Integer maxHeaderListSize = settings.maxHeaderListSize();
+        if (maxHeaderListSize != null) {
+            frameWriter.maxHeaderListSize(maxHeaderListSize);
         }
 
-        if (settings.hasInitialWindowSize()) {
-            outboundFlow.initialOutboundWindowSize(settings.initialWindowSize());
+        Integer maxFrameSize = settings.maxFrameSize();
+        if (maxFrameSize != null) {
+            try {
+                frameWriter.maxFrameSize(maxFrameSize);
+            } catch (IllegalArgumentException e) {
+                throw new Http2Exception(Http2Error.FRAME_SIZE_ERROR,
+                        "Invalid MAX_FRAME_SIZE specified in received settings: " + maxFrameSize);
+            }
+        }
+
+        Integer initialWindowSize = settings.initialWindowSize();
+        if (initialWindowSize != null) {
+            outboundFlow.initialOutboundWindowSize(initialWindowSize);
         }
     }
 
     /**
      * Creates a new stream initiated by the local endpoint.
      */
-    private Http2Stream createLocalStream(int streamId, boolean halfClosed, int streamDependency,
-            short weight, boolean exclusive) throws Http2Exception {
+    private Http2Stream createLocalStream(int streamId, boolean halfClosed) throws Http2Exception {
         return connection.local().createStream(streamId, halfClosed);
     }
 
     /**
      * Creates a new stream initiated by the remote endpoint.
      */
-    private Http2Stream createRemoteStream(int streamId, boolean halfClosed, int streamDependency,
-            short weight, boolean exclusive) throws Http2Exception {
+    private Http2Stream createRemoteStream(int streamId, boolean halfClosed) throws Http2Exception {
         return connection.remote().createStream(streamId, halfClosed);
     }
 
@@ -839,21 +779,16 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
 
         @Override
         public void onDataRead(final ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding,
-                boolean endOfStream, boolean endOfSegment, boolean compressed) throws Http2Exception {
+                boolean endOfStream) throws Http2Exception {
             verifyPrefaceReceived();
-
-            if (!connection.local().allowCompressedData() && compressed) {
-                throw protocolError("compression is disallowed.");
-            }
 
             // Check if we received a data frame for a stream which is half-closed
             Http2Stream stream = connection.requireStream(streamId);
             stream.verifyState(STREAM_CLOSED, OPEN, HALF_CLOSED_LOCAL);
 
             // Apply flow control.
-            inboundFlow.applyInboundFlowControl(streamId, data, padding, endOfStream, endOfSegment,
-                    compressed, new Http2InboundFlowController.FrameWriter() {
-
+            inboundFlow.applyInboundFlowControl(streamId, data, padding, endOfStream,
+                    new Http2InboundFlowController.FrameWriter() {
                         @Override
                         public void writeFrame(int streamId, int windowSizeIncrement)
                                 throws Http2Exception {
@@ -869,37 +804,65 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
                 return;
             }
 
+            AbstractHttp2ConnectionHandler.this.onDataRead(ctx, streamId, data, padding, endOfStream);
+
             if (endOfStream) {
                 closeRemoteSide(stream, ctx.newSucceededFuture());
             }
+        }
 
-            AbstractHttp2ConnectionHandler.this.onDataRead(ctx, streamId, data, padding, endOfStream,
-                    endOfSegment, compressed);
+        /**
+         * Verifies that the HTTP/2 connection preface has been received from the remote endpoint.
+         */
+        private void verifyPrefaceReceived() throws Http2Exception {
+            if (!prefaceReceived) {
+                throw protocolError("Received non-SETTINGS as first frame.");
+            }
+        }
+
+        /**
+         * Closes the remote side of the given stream. If this causes the stream to be closed, adds a
+         * hook to close the channel after the given future completes.
+         *
+         * @param stream the stream to be half closed.
+         * @param future If closing, the future after which to close the channel. If {@code null},
+         *            ignored.
+         */
+        private void closeRemoteSide(Http2Stream stream, ChannelFuture future) {
+            switch (stream.state()) {
+                case HALF_CLOSED_REMOTE:
+                case OPEN:
+                    stream.closeRemoteSide();
+                    break;
+                default:
+                    close(stream, future);
+                    break;
+            }
         }
 
         @Override
         public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers,
-                int padding, boolean endStream, boolean endSegment) throws Http2Exception {
+                int padding, boolean endStream) throws Http2Exception {
             onHeadersRead(ctx, streamId, headers, 0, DEFAULT_PRIORITY_WEIGHT, false, padding,
-                    endStream, endSegment);
+                    endStream);
         }
 
         @Override
         public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers,
                 int streamDependency, short weight, boolean exclusive, int padding,
-                boolean endStream, boolean endSegment) throws Http2Exception {
+                boolean endStream) throws Http2Exception {
             verifyPrefaceReceived();
 
             Http2Stream stream = connection.stream(streamId);
             verifyGoAwayNotReceived();
             verifyRstStreamNotReceived(stream);
-            if (connection.remote().isGoAwayReceived() || (stream != null && shouldIgnoreFrame(stream))) {
+            if (connection.remote().isGoAwayReceived() || stream != null && shouldIgnoreFrame(stream)) {
                 // Ignore this frame.
                 return;
             }
 
             if (stream == null) {
-                createRemoteStream(streamId, endStream, streamDependency, weight, exclusive);
+                stream = createRemoteStream(streamId, endStream);
             } else {
                 if (stream.state() == RESERVED_REMOTE) {
                     // Received headers for a reserved push stream ... open it for push to the
@@ -917,15 +880,15 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
                         stream.setPriority(streamDependency, weight, exclusive);
                     }
                 }
-
-                // If the headers completes this stream, close it.
-                if (endStream) {
-                    closeRemoteSide(stream, ctx.newSucceededFuture());
-                }
             }
 
             AbstractHttp2ConnectionHandler.this.onHeadersRead(ctx, streamId, headers, streamDependency,
-                    weight, exclusive, padding, endStream, endSegment);
+                    weight, exclusive, padding, endStream);
+
+            // If the headers completes this stream, close it.
+            if (endStream) {
+                closeRemoteSide(stream, ctx.newSucceededFuture());
+            }
         }
 
         @Override
@@ -960,9 +923,10 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
             }
 
             stream.terminateReceived();
-            close(stream, ctx.newSucceededFuture());
 
             AbstractHttp2ConnectionHandler.this.onRstStreamRead(ctx, streamId, errorCode);
+
+            close(stream, ctx.newSucceededFuture());
         }
 
         @Override
@@ -977,6 +941,50 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
             }
 
             AbstractHttp2ConnectionHandler.this.onSettingsAckRead(ctx);
+        }
+
+        /**
+         * Applies settings sent from the local endpoint.
+         */
+        private void applyLocalSettings(Http2Settings settings) throws Http2Exception {
+            Boolean pushEnabled = settings.pushEnabled();
+            if (pushEnabled != null) {
+                if (connection.isServer()) {
+                    throw protocolError("Server sending SETTINGS frame with ENABLE_PUSH specified");
+                }
+                connection.local().allowPushTo(pushEnabled);
+            }
+
+            Long maxConcurrentStreams = settings.maxConcurrentStreams();
+            if (maxConcurrentStreams != null) {
+                int value = (int) Math.min(maxConcurrentStreams, Integer.MAX_VALUE);
+                connection.remote().maxStreams(value);
+            }
+
+            Long headerTableSize = settings.headerTableSize();
+            if (headerTableSize != null) {
+                frameReader.maxHeaderTableSize(headerTableSize);
+            }
+
+            Integer maxHeaderListSize = settings.maxHeaderListSize();
+            if (maxHeaderListSize != null) {
+                frameReader.maxHeaderListSize(maxHeaderListSize);
+            }
+
+            Integer maxFrameSize = settings.maxFrameSize();
+            if (maxFrameSize != null) {
+                try {
+                    frameReader.maxFrameSize(maxFrameSize);
+                } catch (IllegalArgumentException e) {
+                    throw new Http2Exception(Http2Error.FRAME_SIZE_ERROR,
+                            "Invalid MAX_FRAME_SIZE specified in sent settings: " + maxFrameSize);
+                }
+            }
+
+            Integer initialWindowSize = settings.initialWindowSize();
+            if (initialWindowSize != null) {
+                inboundFlow.initialInboundWindowSize(initialWindowSize);
+            }
         }
 
         @Override
@@ -998,7 +1006,8 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
             verifyPrefaceReceived();
 
             // Send an ack back to the remote client.
-            frameWriter.writePing(ctx, ctx.newPromise(), true, data);
+            // Need to retain the buffer here since it will be released after the write completes.
+            frameWriter.writePing(ctx, ctx.newPromise(), true, data.retain());
 
             AbstractHttp2ConnectionHandler.this.onPingRead(ctx, data);
         }
@@ -1059,31 +1068,9 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
         }
 
         @Override
-        public void onAltSvcRead(ChannelHandlerContext ctx, int streamId, long maxAge, int port,
-                ByteBuf protocolId, String host, String origin) throws Http2Exception {
-            if (connection.isServer()) {
-                throw protocolError("Server received ALT_SVC frame");
-            }
-            AbstractHttp2ConnectionHandler.this.onAltSvcRead(ctx, streamId, maxAge, port,
-                    protocolId, host, origin);
-        }
-
-        @Override
-        public void onBlockedRead(ChannelHandlerContext ctx, int streamId) throws Http2Exception {
-            verifyPrefaceReceived();
-
-            Http2Stream stream = connection.requireStream(streamId);
-            verifyGoAwayNotReceived();
-            verifyRstStreamNotReceived(stream);
-            if (stream.state() == CLOSED || shouldIgnoreFrame(stream)) {
-                // Ignored for closed streams.
-                return;
-            }
-
-            // Update the outbound flow controller.
-            outboundFlow.setBlocked(streamId);
-
-            AbstractHttp2ConnectionHandler.this.onBlockedRead(ctx, streamId);
+        public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
+                ByteBuf payload) {
+            AbstractHttp2ConnectionHandler.this.onUnknownFrame(ctx, frameType, streamId, flags, payload);
         }
 
         /**
@@ -1138,14 +1125,13 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
         FlowControlWriter(ChannelHandlerContext ctx, ByteBuf data, ChannelPromise promise) {
             this.ctx = ctx;
             this.promise = promise;
-            promises = new ArrayList<ChannelPromise>(
-                    Arrays.asList(promise));
+            promises = new ArrayList<ChannelPromise>(4);
+            promises.add(promise);
             remaining = data.readableBytes();
         }
 
         @Override
-        public void writeFrame(int streamId, ByteBuf data, int padding,
-                boolean endStream, boolean endSegment, boolean compressed) {
+        public void writeFrame(int streamId, ByteBuf data, int padding, boolean endStream) {
             if (promise.isDone()) {
                 // Most likely the write already failed. Just release the
                 // buffer.
@@ -1174,12 +1160,10 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
 
             // Write the frame.
             ChannelFuture future =
-                    frameWriter.writeData(ctx, chunkPromise, streamId, data,
-                            padding, endStream, endSegment, compressed);
+                    frameWriter.writeData(ctx, chunkPromise, streamId, data, padding, endStream);
 
             // Close the connection on write failures that leave the outbound
-            // flow
-            // control window in a corrupt state.
+            // flow control window in a corrupt state.
             future.addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future)
@@ -1205,6 +1189,11 @@ public abstract class AbstractHttp2ConnectionHandler extends ByteToMessageDecode
         @Override
         public void setFailure(Throwable cause) {
             failAllPromises(cause);
+        }
+
+        @Override
+        public int maxFrameSize() {
+            return frameWriter.maxFrameSize();
         }
 
         /**
