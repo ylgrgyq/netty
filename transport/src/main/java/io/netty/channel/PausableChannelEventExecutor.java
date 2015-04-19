@@ -200,7 +200,7 @@ abstract class PausableChannelEventExecutor implements PausableEventExecutor, Ch
     @Override
     @Deprecated
     public void shutdown() {
-        unwrap().terminationFuture();
+        unwrap().shutdown();
     }
 
     @Override
@@ -324,6 +324,11 @@ abstract class PausableChannelEventExecutor implements PausableEventExecutor, Ch
             throw new RejectedExecutionException();
         }
         unwrap().execute(command);
+    }
+
+    @Override
+    public void close() throws Exception {
+        unwrap().close();
     }
 
     private static final class ChannelCallableEventExecutor<V> implements CallableEventExecutorAdapter<V> {

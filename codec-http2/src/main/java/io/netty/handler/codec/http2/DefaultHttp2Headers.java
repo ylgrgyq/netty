@@ -12,544 +12,346 @@
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package io.netty.handler.codec.http2;
 
-import static io.netty.handler.codec.http2.Http2Headers.PseudoHeaderName.AUTHORITY;
-import static io.netty.handler.codec.http2.Http2Headers.PseudoHeaderName.METHOD;
-import static io.netty.handler.codec.http2.Http2Headers.PseudoHeaderName.SCHEME;
+import static io.netty.util.internal.StringUtil.UPPER_CASE_TO_LOWER_CASE_ASCII_OFFSET;
+import io.netty.handler.codec.BinaryHeaders;
+import io.netty.handler.codec.DefaultBinaryHeaders;
+import io.netty.util.AsciiString;
+import io.netty.util.ByteProcessor;
+import io.netty.util.ByteString;
+import io.netty.util.internal.PlatformDependent;
 
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.NoSuchElementException;
-import java.util.Set;
-import java.util.TreeSet;
+public class DefaultHttp2Headers extends DefaultBinaryHeaders implements Http2Headers {
+    private static final ByteProcessor HTTP2_ASCII_UPPERCASE_PROCESSOR = new ByteProcessor() {
+        @Override
+        public boolean process(byte value) throws Exception {
+            return value < 'A' || value > 'Z';
+        }
+    };
 
-/**
- * An immutable collection of headers sent or received via HTTP/2.
- */
-public final class DefaultHttp2Headers extends Http2Headers {
-    private static final int MAX_VALUE_LENGTH = 0xFFFF; // Length is a 16-bit field
-    private static final int BUCKET_SIZE = 17;
+    private static final class Http2AsciiToLowerCaseConverter implements ByteProcessor {
+        private final byte[] result;
+        private int i;
 
-    private final HeaderEntry[] entries;
-    private final HeaderEntry head;
-    private final int size;
-
-    private DefaultHttp2Headers(Builder builder) {
-        entries = builder.entries;
-        head = builder.head;
-        size = builder.size;
-    }
-
-    @Override
-    public String get(String name) {
-        if (name == null) {
-            throw new NullPointerException("name");
+        public Http2AsciiToLowerCaseConverter(int length) {
+            result = new byte[length];
         }
 
-        int h = hash(name);
-        int i = index(h);
-        HeaderEntry e = entries[i];
-        while (e != null) {
-            if (e.hash == h && eq(name, e.key)) {
-                return e.value;
+        @Override
+        public boolean process(byte value) throws Exception {
+            result[i++] = (value >= 'A' && value <= 'Z')
+                    ? (byte) (value + UPPER_CASE_TO_LOWER_CASE_ASCII_OFFSET) : value;
+            return true;
+        }
+
+        public byte[] result() {
+            return result;
+        }
+    };
+
+    private static final NameConverter<ByteString> HTTP2_ASCII_TO_LOWER_CONVERTER = new NameConverter<ByteString>() {
+        @Override
+        public ByteString convertName(ByteString name) {
+            if (name instanceof AsciiString) {
+                return ((AsciiString) name).toLowerCase();
             }
 
-            e = e.next;
-        }
-        return null;
-    }
-
-    @Override
-    public List<String> getAll(String name) {
-        if (name == null) {
-            throw new NullPointerException("name");
-        }
-
-        LinkedList<String> values = new LinkedList<String>();
-
-        int h = hash(name);
-        int i = index(h);
-        HeaderEntry e = entries[i];
-        while (e != null) {
-            if (e.hash == h && eq(name, e.key)) {
-                values.addFirst(e.value);
-            }
-            e = e.next;
-        }
-        return values;
-    }
-
-    @Override
-    public List<Entry<String, String>> entries() {
-        List<Map.Entry<String, String>> all = new LinkedList<Map.Entry<String, String>>();
-
-        HeaderEntry e = head.after;
-        while (e != head) {
-            all.add(e);
-            e = e.after;
-        }
-        return all;
-    }
-
-    @Override
-    public boolean contains(String name) {
-        return get(name) != null;
-    }
-
-    @Override
-    public boolean isEmpty() {
-        return size == 0;
-    }
-
-    @Override
-    public int size() {
-        return size;
-    }
-
-    @Override
-    public Set<String> names() {
-        Set<String> names = new TreeSet<String>();
-
-        HeaderEntry e = head.after;
-        while (e != head) {
-            names.add(e.key);
-            e = e.after;
-        }
-        return names;
-    }
-
-    @Override
-    public Iterator<Entry<String, String>> iterator() {
-        return new HeaderIterator();
-    }
-
-    /**
-     * Short cut for {@code new DefaultHttp2Headers.Builder()}.
-     */
-    public static Builder newBuilder() {
-        return new Builder();
-    }
-
-    /**
-     * Builds instances of {@link DefaultHttp2Headers}.
-     */
-    public static class Builder {
-        private HeaderEntry[] entries;
-        private HeaderEntry head;
-        private Http2Headers buildResults;
-        private int size;
-
-        public Builder() {
-            clear();
-        }
-
-        /**
-         * Clears all existing headers from this collection and replaces them with the given header
-         * set.
-         */
-        public void set(Http2Headers headers) {
-            // No need to lazy copy the previous results, since we're starting from scratch.
-            clear();
-            for (Map.Entry<String, String> entry : headers) {
-                add(entry.getKey(), entry.getValue());
-            }
-        }
-
-        /**
-         * Adds the given header to the collection.
-         *
-         * @throws IllegalArgumentException if the name or value of this header is invalid for any reason.
-         */
-        public Builder add(final String name, final Object value) {
-            // If this is the first call on the builder since the last build, copy the previous
-            // results.
-            lazyCopy();
-
-            String lowerCaseName = name.toLowerCase();
-            validateHeaderName(lowerCaseName);
-            String strVal = toString(value);
-            validateHeaderValue(strVal);
-            int nameHash = hash(lowerCaseName);
-            int hashTableIndex = index(nameHash);
-            add0(nameHash, hashTableIndex, lowerCaseName, strVal);
-            return this;
-        }
-
-        /**
-         * Removes the header with the given name from this collection.
-         */
-        public Builder remove(final String name) {
-            if (name == null) {
-                throw new NullPointerException("name");
-            }
-
-            // If this is the first call on the builder since the last build, copy the previous
-            // results.
-            lazyCopy();
-
-            String lowerCaseName = name.toLowerCase();
-            int nameHash = hash(lowerCaseName);
-            int hashTableIndex = index(nameHash);
-            remove0(nameHash, hashTableIndex, lowerCaseName);
-            return this;
-        }
-
-        /**
-         * Sets the given header in the collection, replacing any previous values.
-         *
-         * @throws IllegalArgumentException if the name or value of this header is invalid for any reason.
-         */
-        public Builder set(final String name, final Object value) {
-            // If this is the first call on the builder since the last build, copy the previous
-            // results.
-            lazyCopy();
-
-            String lowerCaseName = name.toLowerCase();
-            validateHeaderName(lowerCaseName);
-            String strVal = toString(value);
-            validateHeaderValue(strVal);
-            int nameHash = hash(lowerCaseName);
-            int hashTableIndex = index(nameHash);
-            remove0(nameHash, hashTableIndex, lowerCaseName);
-            add0(nameHash, hashTableIndex, lowerCaseName, strVal);
-            return this;
-        }
-
-        /**
-         * Sets the given header in the collection, replacing any previous values.
-         *
-         * @throws IllegalArgumentException if the name or value of this header is invalid for any reason.
-         */
-        public Builder set(final String name, final Iterable<?> values) {
-            if (values == null) {
-                throw new NullPointerException("values");
-            }
-
-            // If this is the first call on the builder since the last build, copy the previous
-            // results.
-            lazyCopy();
-
-            String lowerCaseName = name.toLowerCase();
-            validateHeaderName(lowerCaseName);
-
-            int nameHash = hash(lowerCaseName);
-            int hashTableIndex = index(nameHash);
-
-            remove0(nameHash, hashTableIndex, lowerCaseName);
-            for (Object v : values) {
-                if (v == null) {
-                    break;
+            try {
+                if (name.forEachByte(HTTP2_ASCII_UPPERCASE_PROCESSOR) == -1) {
+                    return name;
                 }
-                String strVal = toString(v);
-                validateHeaderValue(strVal);
-                add0(nameHash, hashTableIndex, lowerCaseName, strVal);
-            }
-            return this;
-        }
 
-        /**
-         * Clears all values from this collection.
-         */
-        public Builder clear() {
-            // No lazy copy required, since we're just creating a new array.
-            entries = new HeaderEntry[BUCKET_SIZE];
-            head = new HeaderEntry(-1, null, null);
-            head.before = head.after = head;
-            buildResults = null;
-            size = 0;
-            return this;
-        }
-
-        /**
-         * Sets the {@link PseudoHeaderName#METHOD} header.
-         */
-        public Builder method(String method) {
-            return set(METHOD.value(), method);
-        }
-
-        /**
-         * Sets the {@link PseudoHeaderName#SCHEME} header.
-         */
-        public Builder scheme(String scheme) {
-            return set(SCHEME.value(), scheme);
-        }
-
-        /**
-         * Sets the {@link PseudoHeaderName#AUTHORITY} header.
-         */
-        public Builder authority(String authority) {
-            return set(AUTHORITY.value(), authority);
-        }
-
-        /**
-         * Sets the {@link PseudoHeaderName#PATH} header.
-         */
-        public Builder path(String path) {
-            return set(PseudoHeaderName.PATH.value(), path);
-        }
-
-        /**
-         * Sets the {@link PseudoHeaderName#STATUS} header.
-         */
-        public Builder status(String status) {
-            return set(PseudoHeaderName.STATUS.value(), status);
-        }
-
-        /**
-         * Builds a new instance of {@link DefaultHttp2Headers}.
-         */
-        public DefaultHttp2Headers build() {
-            // If this is the first call on the builder since the last build, copy the previous
-            // results.
-            lazyCopy();
-
-            // Give the multimap over to the headers instance and save the build results for
-            // future lazy copies if this builder is used again later.
-            DefaultHttp2Headers headers = new DefaultHttp2Headers(this);
-            buildResults = headers;
-            return headers;
-        }
-
-        /**
-         * Performs a lazy copy of the last build results, if there are any. For the typical use
-         * case, headers will only be built once so no copy will be required. If the any method is
-         * called on the builder after that, it will force a copy of the most recently created
-         * headers object.
-         */
-        private void lazyCopy() {
-            if (buildResults != null) {
-                set(buildResults);
-                buildResults = null;
-            }
-        }
-
-        private void add0(int hash, int hashTableIndex, final String name, final String value) {
-            // Update the hash table.
-            HeaderEntry e = entries[hashTableIndex];
-            HeaderEntry newEntry;
-            entries[hashTableIndex] = newEntry = new HeaderEntry(hash, name, value);
-            newEntry.next = e;
-
-            // Update the linked list.
-            newEntry.addBefore(head);
-            size++;
-        }
-
-        private void remove0(int hash, int hashTableIndex, String name) {
-            HeaderEntry e = entries[hashTableIndex];
-            if (e == null) {
-                return;
-            }
-
-            for (;;) {
-                if (e.hash == hash && eq(name, e.key)) {
-                    e.remove();
-                    size--;
-                    HeaderEntry next = e.next;
-                    if (next != null) {
-                        entries[hashTableIndex] = next;
-                        e = next;
-                    } else {
-                        entries[hashTableIndex] = null;
-                        return;
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            for (;;) {
-                HeaderEntry next = e.next;
-                if (next == null) {
-                    break;
-                }
-                if (next.hash == hash && eq(name, next.key)) {
-                    e.next = next.next;
-                    next.remove();
-                    size--;
-                } else {
-                    e = next;
-                }
-            }
-        }
-
-        private static String toString(Object value) {
-            if (value == null) {
+                Http2AsciiToLowerCaseConverter converter = new Http2AsciiToLowerCaseConverter(name.length());
+                name.forEachByte(converter);
+                return new ByteString(converter.result(), false);
+            } catch (Exception e) {
+                PlatformDependent.throwException(e);
                 return null;
             }
-            return value.toString();
         }
+    };
 
-        /**
-         * Validate a HTTP2 header value. Does not validate max length.
-         */
-        private static void validateHeaderValue(String value) {
-            if (value == null) {
-                throw new NullPointerException("value");
-            }
-            for (int i = 0; i < value.length(); i++) {
-                char c = value.charAt(i);
-                if (c == 0) {
-                    throw new IllegalArgumentException("value contains null character: " + value);
-                }
-            }
-        }
-
-        /**
-         * Validate a HTTP/2 header name.
-         */
-        private static void validateHeaderName(String name) {
-            if (name == null) {
-                throw new NullPointerException("name");
-            }
-            if (name.isEmpty()) {
-                throw new IllegalArgumentException("name cannot be length zero");
-            }
-            // Since name may only contain ascii characters, for valid names
-            // name.length() returns the number of bytes when UTF-8 encoded.
-            if (name.length() > MAX_VALUE_LENGTH) {
-                throw new IllegalArgumentException("name exceeds allowable length: " + name);
-            }
-            for (int i = 0; i < name.length(); i++) {
-                char c = name.charAt(i);
-                if (c == 0) {
-                    throw new IllegalArgumentException("name contains null character: " + name);
-                }
-                if (c > 127) {
-                    throw new IllegalArgumentException("name contains non-ascii character: " + name);
-                }
-            }
-            // If the name looks like an HTTP/2 pseudo-header, validate it against the list of
-            // valid pseudo-headers.
-            if (name.startsWith(PSEUDO_HEADER_PREFIX)) {
-                if (!Http2Headers.PseudoHeaderName.isPseudoHeader(name)) {
-                    throw new IllegalArgumentException("Invalid HTTP/2 Pseudo-header: " + name);
-                }
-            }
-        }
+    /**
+     * Creates an instance that will convert all header names to lowercase.
+     */
+    public DefaultHttp2Headers() {
+        this(true);
     }
 
-    private static int hash(String name) {
-        int h = 0;
-        for (int i = name.length() - 1; i >= 0; i--) {
-            char c = name.charAt(i);
-            if (c >= 'A' && c <= 'Z') {
-                c += 32;
-            }
-            h = 31 * h + c;
-        }
-
-        if (h > 0) {
-            return h;
-        } else if (h == Integer.MIN_VALUE) {
-            return Integer.MAX_VALUE;
-        } else {
-            return -h;
-        }
+    /**
+     * Creates an instance that can be configured to either do header field name conversion to
+     * lowercase, or not do any conversion at all.
+     * <p>
+     *
+     * <strong>Note</strong> that setting {@code forceKeyToLower} to {@code false} can violate the
+     * <a href="https://tools.ietf.org/html/draft-ietf-httpbis-http2-16#section-8.1.2">HTTP/2 specification</a>
+     * which specifies that a request or response containing an uppercase header field MUST be treated
+     * as malformed. Only set {@code forceKeyToLower} to {@code false} if you are explicitly using lowercase
+     * header field names and want to avoid the conversion to lowercase.
+     *
+     * @param forceKeyToLower if @{code false} no header name conversion will be performed
+     */
+    public DefaultHttp2Headers(boolean forceKeyToLower) {
+        super(forceKeyToLower ? HTTP2_ASCII_TO_LOWER_CONVERTER : IDENTITY_NAME_CONVERTER);
     }
 
-    private static boolean eq(String name1, String name2) {
-        int nameLen = name1.length();
-        if (nameLen != name2.length()) {
-            return false;
-        }
-
-        for (int i = nameLen - 1; i >= 0; i--) {
-            char c1 = name1.charAt(i);
-            char c2 = name2.charAt(i);
-            if (c1 != c2) {
-                if (c1 >= 'A' && c1 <= 'Z') {
-                    c1 += 32;
-                }
-                if (c2 >= 'A' && c2 <= 'Z') {
-                    c2 += 32;
-                }
-                if (c1 != c2) {
-                    return false;
-                }
-            }
-        }
-        return true;
+    @Override
+    public Http2Headers add(ByteString name, ByteString value) {
+        super.add(name, value);
+        return this;
     }
 
-    private static int index(int hash) {
-        return hash % BUCKET_SIZE;
+    @Override
+    public Http2Headers add(ByteString name, Iterable<? extends ByteString> values) {
+        super.add(name, values);
+        return this;
     }
 
-    private final class HeaderIterator implements Iterator<Map.Entry<String, String>> {
-
-        private HeaderEntry current = head;
-
-        @Override
-        public boolean hasNext() {
-            return current.after != head;
-        }
-
-        @Override
-        public Entry<String, String> next() {
-            current = current.after;
-
-            if (current == head) {
-                throw new NoSuchElementException();
-            }
-
-            return current;
-        }
-
-        @Override
-        public void remove() {
-            throw new UnsupportedOperationException();
-        }
+    @Override
+    public Http2Headers add(ByteString name, ByteString... values) {
+        super.add(name, values);
+        return this;
     }
 
-    private static final class HeaderEntry implements Map.Entry<String, String> {
-        final int hash;
-        final String key;
-        final String value;
-        HeaderEntry next;
-        HeaderEntry before, after;
+    @Override
+    public Http2Headers addObject(ByteString name, Object value) {
+        super.addObject(name, value);
+        return this;
+    }
 
-        HeaderEntry(int hash, String key, String value) {
-            this.hash = hash;
-            this.key = key;
-            this.value = value;
-        }
+    @Override
+    public Http2Headers addObject(ByteString name, Iterable<?> values) {
+        super.addObject(name, values);
+        return this;
+    }
 
-        void remove() {
-            before.after = after;
-            after.before = before;
-        }
+    @Override
+    public Http2Headers addObject(ByteString name, Object... values) {
+        super.addObject(name, values);
+        return this;
+    }
 
-        void addBefore(HeaderEntry e) {
-            after = e;
-            before = e.before;
-            before.after = this;
-            after.before = this;
-        }
+    @Override
+    public Http2Headers addBoolean(ByteString name, boolean value) {
+        super.addBoolean(name, value);
+        return this;
+    }
 
-        @Override
-        public String getKey() {
-            return key;
-        }
+    @Override
+    public Http2Headers addChar(ByteString name, char value) {
+        super.addChar(name, value);
+        return this;
+    }
 
-        @Override
-        public String getValue() {
-            return value;
-        }
+    @Override
+    public Http2Headers addByte(ByteString name, byte value) {
+        super.addByte(name, value);
+        return this;
+    }
 
-        @Override
-        public String setValue(String value) {
-            throw new UnsupportedOperationException();
-        }
+    @Override
+    public Http2Headers addShort(ByteString name, short value) {
+        super.addShort(name, value);
+        return this;
+    }
 
-        @Override
-        public String toString() {
-            return key + '=' + value;
-        }
+    @Override
+    public Http2Headers addInt(ByteString name, int value) {
+        super.addInt(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers addLong(ByteString name, long value) {
+        super.addLong(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers addFloat(ByteString name, float value) {
+        super.addFloat(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers addDouble(ByteString name, double value) {
+        super.addDouble(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers addTimeMillis(ByteString name, long value) {
+        super.addTimeMillis(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers add(BinaryHeaders headers) {
+        super.add(headers);
+        return this;
+    }
+
+    @Override
+    public Http2Headers set(ByteString name, ByteString value) {
+        super.set(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers set(ByteString name, Iterable<? extends ByteString> values) {
+        super.set(name, values);
+        return this;
+    }
+
+    @Override
+    public Http2Headers set(ByteString name, ByteString... values) {
+        super.set(name, values);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setObject(ByteString name, Object value) {
+        super.setObject(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setObject(ByteString name, Iterable<?> values) {
+        super.setObject(name, values);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setObject(ByteString name, Object... values) {
+        super.setObject(name, values);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setBoolean(ByteString name, boolean value) {
+        super.setBoolean(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setChar(ByteString name, char value) {
+        super.setChar(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setByte(ByteString name, byte value) {
+        super.setByte(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setShort(ByteString name, short value) {
+        super.setShort(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setInt(ByteString name, int value) {
+        super.setInt(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setLong(ByteString name, long value) {
+        super.setLong(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setFloat(ByteString name, float value) {
+        super.setFloat(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setDouble(ByteString name, double value) {
+        super.setDouble(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setTimeMillis(ByteString name, long value) {
+        super.setTimeMillis(name, value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers set(BinaryHeaders headers) {
+        super.set(headers);
+        return this;
+    }
+
+    @Override
+    public Http2Headers setAll(BinaryHeaders headers) {
+        super.setAll(headers);
+        return this;
+    }
+
+    @Override
+    public Http2Headers clear() {
+        super.clear();
+        return this;
+    }
+
+    @Override
+    public Http2Headers method(ByteString value) {
+        set(PseudoHeaderName.METHOD.value(), value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers scheme(ByteString value) {
+        set(PseudoHeaderName.SCHEME.value(), value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers authority(ByteString value) {
+        set(PseudoHeaderName.AUTHORITY.value(), value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers path(ByteString value) {
+        set(PseudoHeaderName.PATH.value(), value);
+        return this;
+    }
+
+    @Override
+    public Http2Headers status(ByteString value) {
+        set(PseudoHeaderName.STATUS.value(), value);
+        return this;
+    }
+
+    @Override
+    public ByteString method() {
+        return get(PseudoHeaderName.METHOD.value());
+    }
+
+    @Override
+    public ByteString scheme() {
+        return get(PseudoHeaderName.SCHEME.value());
+    }
+
+    @Override
+    public ByteString authority() {
+        return get(PseudoHeaderName.AUTHORITY.value());
+    }
+
+    @Override
+    public ByteString path() {
+        return get(PseudoHeaderName.PATH.value());
+    }
+
+    @Override
+    public ByteString status() {
+        return get(PseudoHeaderName.STATUS.value());
     }
 }

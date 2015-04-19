@@ -15,21 +15,16 @@
  */
 package io.netty.util.concurrent;
 
-import io.netty.util.internal.CallableEventExecutorAdapter;
 import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.RunnableEventExecutorAdapter;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -37,12 +32,13 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 /**
  * Abstract base class for {@link EventExecutor}'s that execute all its submitted tasks in a single thread.
  *
  */
-public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
+public abstract class SingleThreadEventExecutor extends AbstractScheduledEventExecutor {
 
     private static final InternalLogger logger =
             InternalLoggerFactory.getInstance(SingleThreadEventExecutor.class);
@@ -61,8 +57,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
     };
 
     private static final AtomicIntegerFieldUpdater<SingleThreadEventExecutor> STATE_UPDATER;
-
-    private static final long threadOffset;
+    private static final AtomicReferenceFieldUpdater<SingleThreadEventExecutor, Thread> THREAD_UPDATER;
 
     static {
         AtomicIntegerFieldUpdater<SingleThreadEventExecutor> updater =
@@ -72,16 +67,16 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
         }
         STATE_UPDATER = updater;
 
-        try {
-            threadOffset =
-                    PlatformDependent.objectFieldOffset(SingleThreadEventExecutor.class.getDeclaredField("thread"));
-        } catch (NoSuchFieldException e) {
-            throw new RuntimeException();
+        AtomicReferenceFieldUpdater<SingleThreadEventExecutor, Thread> refUpdater =
+                PlatformDependent.newAtomicReferenceFieldUpdater(SingleThreadEventExecutor.class, "thread");
+        if (refUpdater == null) {
+            refUpdater = AtomicReferenceFieldUpdater.newUpdater(
+                    SingleThreadEventExecutor.class, Thread.class, "thread");
         }
+        THREAD_UPDATER = refUpdater;
     }
 
     private final Queue<Runnable> taskQueue;
-    final Queue<ScheduledFutureTask<?>> delayedTaskQueue = new PriorityQueue<ScheduledFutureTask<?>>();
 
     @SuppressWarnings({ "FieldMayBeFinal", "unused" })
     private volatile Thread thread;
@@ -103,7 +98,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
 
     private boolean firstRun = true;
 
-    private final Runnable AS_RUNNABLE = new Runnable() {
+    private final Runnable asRunnable = new Runnable() {
         @Override
         public void run() {
             updateThread(Thread.currentThread());
@@ -185,8 +180,8 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
 
         BlockingQueue<Runnable> taskQueue = (BlockingQueue<Runnable>) this.taskQueue;
         for (;;) {
-            ScheduledFutureTask<?> delayedTask = delayedTaskQueue.peek();
-            if (delayedTask == null) {
+            ScheduledFutureTask<?> scheduledTask = peekScheduledTask();
+            if (scheduledTask == null) {
                 Runnable task = null;
                 try {
                     task = taskQueue.take();
@@ -198,7 +193,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
                 }
                 return task;
             } else {
-                long delayNanos = delayedTask.delayNanos();
+                long delayNanos = scheduledTask.delayNanos();
                 Runnable task = null;
                 if (delayNanos > 0) {
                     try {
@@ -209,11 +204,11 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
                     }
                 }
                 if (task == null) {
-                    // We need to fetch the delayed tasks now as otherwise there may be a chance that
-                    // delayed tasks are never executed if there is always one task in the taskQueue.
+                    // We need to fetch the scheduled tasks now as otherwise there may be a chance that
+                    // scheduled tasks are never executed if there is always one task in the taskQueue.
                     // This is for example true for the read task of OIO Transport
                     // See https://github.com/netty/netty/issues/1614
-                    fetchFromDelayedQueue();
+                    fetchFromScheduledTaskQueue();
                     task = taskQueue.poll();
                 }
 
@@ -224,23 +219,15 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
         }
     }
 
-    private void fetchFromDelayedQueue() {
-        long nanoTime = 0L;
-        for (;;) {
-            ScheduledFutureTask<?> delayedTask = delayedTaskQueue.peek();
-            if (delayedTask == null) {
-                break;
-            }
-
-            if (nanoTime == 0L) {
-                nanoTime = ScheduledFutureTask.nanoTime();
-            }
-
-            if (delayedTask.deadlineNanos() <= nanoTime) {
-                delayedTaskQueue.remove();
-                taskQueue.add(delayedTask);
-            } else {
-                break;
+    private void fetchFromScheduledTaskQueue() {
+        if (hasScheduledTasks()) {
+            long nanoTime = AbstractScheduledEventExecutor.nanoTime();
+            for (;;) {
+                Runnable scheduledTask = pollScheduledTask(nanoTime);
+                if (scheduledTask == null) {
+                    break;
+                }
+                taskQueue.add(scheduledTask);
             }
         }
     }
@@ -259,16 +246,6 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
     protected boolean hasTasks() {
         assert inEventLoop();
         return !taskQueue.isEmpty();
-    }
-
-    /**
-     * Returns {@code true} if a scheduled task is ready for processing by {@link #runAllTasks()} or
-     * {@link #runAllTasks(long)}.
-     */
-    protected boolean hasScheduledTasks() {
-        assert inEventLoop();
-        ScheduledFutureTask<?> delayedTask = delayedTaskQueue.peek();
-        return delayedTask != null && delayedTask.deadlineNanos() <= ScheduledFutureTask.nanoTime();
     }
 
     /**
@@ -311,7 +288,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
      * @return {@code true} if and only if at least one task was run
      */
     protected boolean runAllTasks() {
-        fetchFromDelayedQueue();
+        fetchFromScheduledTaskQueue();
         Runnable task = pollTask();
         if (task == null) {
             return false;
@@ -337,7 +314,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
      * the tasks in the task queue and returns if it ran longer than {@code timeoutNanos}.
      */
     protected boolean runAllTasks(long timeoutNanos) {
-        fetchFromDelayedQueue();
+        fetchFromScheduledTaskQueue();
         Runnable task = pollTask();
         if (task == null) {
             return false;
@@ -379,12 +356,12 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
      * Returns the amount of time left until the scheduled task with the closest dead line is executed.
      */
     protected long delayNanos(long currentTimeNanos) {
-        ScheduledFutureTask<?> delayedTask = delayedTaskQueue.peek();
-        if (delayedTask == null) {
+        ScheduledFutureTask<?> scheduledTask = peekScheduledTask();
+        if (scheduledTask == null) {
             return SCHEDULE_PURGE_INTERVAL;
         }
 
-        return delayedTask.delayNanos(currentTimeNanos);
+        return scheduledTask.delayNanos(currentTimeNanos);
     }
 
     /**
@@ -612,7 +589,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
             throw new IllegalStateException("must be invoked from an event loop");
         }
 
-        cancelDelayedTasks();
+        cancelScheduledTasks();
 
         if (gracefulShutdownStartTime == 0) {
             gracefulShutdownStartTime = ScheduledFutureTask.nanoTime();
@@ -651,21 +628,6 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
         // No tasks were added for last quiet period - hopefully safe to shut down.
         // (Hopefully because we really cannot make a guarantee that there will be no execute() calls by a user.)
         return true;
-    }
-
-    private void cancelDelayedTasks() {
-        if (delayedTaskQueue.isEmpty()) {
-            return;
-        }
-
-        final ScheduledFutureTask<?>[] delayedTasks =
-                delayedTaskQueue.toArray(new ScheduledFutureTask<?>[delayedTaskQueue.size()]);
-
-        for (ScheduledFutureTask<?> task: delayedTasks) {
-            task.cancel(false);
-        }
-
-        delayedTaskQueue.clear();
     }
 
     @Override
@@ -720,114 +682,11 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
 
     private static final long SCHEDULE_PURGE_INTERVAL = TimeUnit.SECONDS.toNanos(1);
 
-    @Override
-    public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
-        if (command == null) {
-            throw new NullPointerException("command");
-        }
-        if (unit == null) {
-            throw new NullPointerException("unit");
-        }
-        if (delay < 0) {
-            throw new IllegalArgumentException(
-                    String.format("delay: %d (expected: >= 0)", delay));
-        }
-        return schedule(new ScheduledFutureTask<Void>(
-                this, delayedTaskQueue, toCallable(command), ScheduledFutureTask.deadlineNanos(unit.toNanos(delay))));
-    }
-
-    @Override
-    public <V> ScheduledFuture<V> schedule(Callable<V> callable, long delay, TimeUnit unit) {
-        if (callable == null) {
-            throw new NullPointerException("callable");
-        }
-        if (unit == null) {
-            throw new NullPointerException("unit");
-        }
-        if (delay < 0) {
-            throw new IllegalArgumentException(
-                    String.format("delay: %d (expected: >= 0)", delay));
-        }
-        return schedule(new ScheduledFutureTask<V>(
-                this, delayedTaskQueue, callable, ScheduledFutureTask.deadlineNanos(unit.toNanos(delay))));
-    }
-
-    @Override
-    public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
-        if (command == null) {
-            throw new NullPointerException("command");
-        }
-        if (unit == null) {
-            throw new NullPointerException("unit");
-        }
-        if (initialDelay < 0) {
-            throw new IllegalArgumentException(
-                    String.format("initialDelay: %d (expected: >= 0)", initialDelay));
-        }
-        if (period <= 0) {
-            throw new IllegalArgumentException(
-                    String.format("period: %d (expected: > 0)", period));
-        }
-
-        return schedule(new ScheduledFutureTask<Void>(
-                this, delayedTaskQueue, toCallable(command),
-                ScheduledFutureTask.deadlineNanos(unit.toNanos(initialDelay)), unit.toNanos(period)));
-    }
-
-    @Override
-    public ScheduledFuture<?> scheduleWithFixedDelay(Runnable command, long initialDelay, long delay, TimeUnit unit) {
-        if (command == null) {
-            throw new NullPointerException("command");
-        }
-        if (unit == null) {
-            throw new NullPointerException("unit");
-        }
-        if (initialDelay < 0) {
-            throw new IllegalArgumentException(
-                    String.format("initialDelay: %d (expected: >= 0)", initialDelay));
-        }
-        if (delay <= 0) {
-            throw new IllegalArgumentException(
-                    String.format("delay: %d (expected: > 0)", delay));
-        }
-
-        return schedule(new ScheduledFutureTask<Void>(
-                this, delayedTaskQueue, toCallable(command),
-                ScheduledFutureTask.deadlineNanos(unit.toNanos(initialDelay)), -unit.toNanos(delay)));
-    }
-
-    private <V> ScheduledFuture<V> schedule(final ScheduledFutureTask<V> task) {
-        if (task == null) {
-            throw new NullPointerException("task");
-        }
-
-        if (inEventLoop()) {
-            delayedTaskQueue.add(task);
-        } else {
-            execute(new Runnable() {
-                @Override
-                public void run() {
-                    delayedTaskQueue.add(task);
-                }
-            });
-        }
-
-        return task;
-    }
-
-    private static Callable<Void> toCallable(final Runnable command) {
-        if (command instanceof RunnableEventExecutorAdapter) {
-            return new RunnableToCallableAdapter((RunnableEventExecutorAdapter) command);
-        } else {
-            return Executors.<Void>callable(command, null);
-        }
-    }
-
     protected void cleanupAndTerminate(boolean success) {
         for (;;) {
-            int oldState = STATE_UPDATER.get(SingleThreadEventExecutor.this);
+            int oldState = STATE_UPDATER.get(this);
             if (oldState >= ST_SHUTTING_DOWN || STATE_UPDATER.compareAndSet(
-                    SingleThreadEventExecutor.this, oldState, ST_SHUTTING_DOWN)) {
+                    this, oldState, ST_SHUTTING_DOWN)) {
                 break;
             }
         }
@@ -850,7 +709,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
             try {
                 cleanup();
             } finally {
-                STATE_UPDATER.set(SingleThreadEventExecutor.this, ST_TERMINATED);
+                STATE_UPDATER.set(this, ST_TERMINATED);
                 threadLock.release();
                 if (!taskQueue.isEmpty()) {
                     logger.warn(
@@ -867,8 +726,8 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
     private void startExecution() {
         if (STATE_UPDATER.get(this) == ST_NOT_STARTED) {
             if (STATE_UPDATER.compareAndSet(this, ST_NOT_STARTED, ST_STARTED)) {
-                delayedTaskQueue.add(new ScheduledFutureTask<Void>(
-                        this, delayedTaskQueue, Executors.<Void>callable(new PurgeTask(), null),
+                schedule(new ScheduledFutureTask<Void>(
+                        this, Executors.<Void>callable(new PurgeTask(), null),
                         ScheduledFutureTask.deadlineNanos(SCHEDULE_PURGE_INTERVAL), -SCHEDULE_PURGE_INTERVAL));
                 scheduleExecution();
             }
@@ -877,48 +736,17 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
 
     protected final void scheduleExecution() {
         updateThread(null);
-        executor.execute(AS_RUNNABLE);
+        executor.execute(asRunnable);
     }
 
     private void updateThread(Thread t) {
-        PlatformDependent.putOrderedObject(this, threadOffset, t);
+        THREAD_UPDATER.lazySet(this, t);
     }
 
     private final class PurgeTask implements Runnable {
         @Override
         public void run() {
-            Iterator<ScheduledFutureTask<?>> i = delayedTaskQueue.iterator();
-            while (i.hasNext()) {
-                ScheduledFutureTask<?> task = i.next();
-                if (task.isCancelled()) {
-                    i.remove();
-                }
-            }
-        }
-    }
-
-    private static class RunnableToCallableAdapter implements CallableEventExecutorAdapter<Void> {
-
-        final RunnableEventExecutorAdapter runnable;
-
-        RunnableToCallableAdapter(RunnableEventExecutorAdapter runnable) {
-            this.runnable = runnable;
-        }
-
-        @Override
-        public EventExecutor executor() {
-            return runnable.executor();
-        }
-
-        @Override
-        public Callable unwrap() {
-            return null;
-        }
-
-        @Override
-        public Void call() throws Exception {
-            runnable.run();
-            return null;
+            purgeCancelledScheduledTasks();
         }
     }
 }

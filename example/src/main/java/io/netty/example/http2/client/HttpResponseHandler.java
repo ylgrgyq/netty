@@ -19,7 +19,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http2.Http2HttpHeaders;
+import io.netty.handler.codec.http2.HttpUtil;
 import io.netty.util.CharsetUtil;
 
 import java.util.Iterator;
@@ -45,7 +45,7 @@ public class HttpResponseHandler extends SimpleChannelInboundHandler<FullHttpRes
      * @param streamId The stream for which a response is expected
      * @param promise The promise object that will be used to wait/notify events
      * @return The previous object associated with {@code streamId}
-     * @see {@link io.netty.example.http2.client.HttpResponseHandler#awaitResponses awaitResponses}
+     * @see HttpResponseHandler#awaitResponses(long, TimeUnit)
      */
     public ChannelPromise put(int streamId, ChannelPromise promise) {
         return streamidPromiseMap.put(streamId, promise);
@@ -56,7 +56,7 @@ public class HttpResponseHandler extends SimpleChannelInboundHandler<FullHttpRes
      *
      * @param timeout Value of time to wait for each response
      * @param unit Units associated with {@code timeout}
-     * @see {@link io.netty.example.http2.client.HttpResponseHandler#put put}
+     * @see HttpResponseHandler#put(int, ChannelPromise)
      */
     public void awaitResponses(long timeout, TimeUnit unit) {
         Iterator<Entry<Integer, ChannelPromise>> itr = streamidPromiseMap.entrySet().iterator();
@@ -76,7 +76,12 @@ public class HttpResponseHandler extends SimpleChannelInboundHandler<FullHttpRes
 
     @Override
     protected void messageReceived(ChannelHandlerContext ctx, FullHttpResponse msg) throws Exception {
-        int streamId = Integer.parseInt(msg.headers().get(Http2HttpHeaders.Names.STREAM_ID));
+        Integer streamId = msg.headers().getInt(HttpUtil.ExtensionHeaderNames.STREAM_ID.text());
+        if (streamId == null) {
+            System.err.println("HttpResponseHandler unexpected message received: " + msg);
+            return;
+        }
+
         ChannelPromise promise = streamidPromiseMap.get(streamId);
         if (promise == null) {
             System.err.println("Message received for unknown stream id " + streamId);

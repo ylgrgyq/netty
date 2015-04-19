@@ -37,8 +37,6 @@ import javax.net.ssl.SSLEngine;
  */
 public abstract class Http2OrHttpChooser extends ByteToMessageDecoder {
 
-    // TODO: Replace with generic NPN handler
-
     public enum SelectedProtocol {
         /** Must be updated to match the HTTP/2 draft number. */
         HTTP_2(TLS_UPGRADE_PROTOCOL_NAME),
@@ -150,9 +148,8 @@ public abstract class Http2OrHttpChooser extends ByteToMessageDecoder {
     protected abstract ChannelHandler createHttp1RequestHandler();
 
     /**
-     * Create the {@link io.netty.channel.ChannelHandler} that is responsible for handling the http
-     * responses when the when the {@link SelectedProtocol} was {@link SelectedProtocol#HTTP_2}. The
-     * returned class should be a subclass of {@link AbstractHttp2ConnectionHandler}.
+     * Create the {@link ChannelHandler} that is responsible for handling the http responses
+     * when the when the {@link SelectedProtocol} was {@link SelectedProtocol#HTTP_2}.
      */
-    protected abstract ChannelHandler createHttp2RequestHandler();
+    protected abstract Http2ConnectionHandler createHttp2RequestHandler();
 }

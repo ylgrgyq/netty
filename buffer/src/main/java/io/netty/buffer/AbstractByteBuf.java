@@ -15,6 +15,7 @@
  */
 package io.netty.buffer;
 
+import io.netty.util.ByteProcessor;
 import io.netty.util.IllegalReferenceCountException;
 import io.netty.util.ResourceLeakDetector;
 import io.netty.util.internal.PlatformDependent;
@@ -903,10 +904,6 @@ public abstract class AbstractByteBuf extends ByteBuf {
 
     @Override
     public ByteBuf slice(int index, int length) {
-        if (length == 0) {
-            return Unpooled.EMPTY_BUFFER;
-        }
-
         return new SlicedByteBuf(this, index, length);
     }
 
@@ -969,7 +966,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
     }
 
     @Override
-    public int forEachByte(ByteBufProcessor processor) {
+    public int forEachByte(ByteProcessor processor) {
         int index = readerIndex;
         int length = writerIndex - index;
         ensureAccessible();
@@ -977,12 +974,12 @@ public abstract class AbstractByteBuf extends ByteBuf {
     }
 
     @Override
-    public int forEachByte(int index, int length, ByteBufProcessor processor) {
+    public int forEachByte(int index, int length, ByteProcessor processor) {
         checkIndex(index, length);
         return forEachByteAsc0(index, length, processor);
     }
 
-    private int forEachByteAsc0(int index, int length, ByteBufProcessor processor) {
+    private int forEachByteAsc0(int index, int length, ByteProcessor processor) {
         if (processor == null) {
             throw new NullPointerException("processor");
         }
@@ -1009,7 +1006,7 @@ public abstract class AbstractByteBuf extends ByteBuf {
     }
 
     @Override
-    public int forEachByteDesc(ByteBufProcessor processor) {
+    public int forEachByteDesc(ByteProcessor processor) {
         int index = readerIndex;
         int length = writerIndex - index;
         ensureAccessible();
@@ -1017,13 +1014,13 @@ public abstract class AbstractByteBuf extends ByteBuf {
     }
 
     @Override
-    public int forEachByteDesc(int index, int length, ByteBufProcessor processor) {
+    public int forEachByteDesc(int index, int length, ByteProcessor processor) {
         checkIndex(index, length);
 
         return forEachByteDesc0(index, length, processor);
     }
 
-    private int forEachByteDesc0(int index, int length, ByteBufProcessor processor) {
+    private int forEachByteDesc0(int index, int length, ByteProcessor processor) {
 
         if (processor == null) {
             throw new NullPointerException("processor");
@@ -1076,23 +1073,18 @@ public abstract class AbstractByteBuf extends ByteBuf {
             return StringUtil.simpleClassName(this) + "(freed)";
         }
 
-        StringBuilder buf = new StringBuilder();
-        buf.append(StringUtil.simpleClassName(this));
-        buf.append("(ridx: ");
-        buf.append(readerIndex);
-        buf.append(", widx: ");
-        buf.append(writerIndex);
-        buf.append(", cap: ");
-        buf.append(capacity());
+        StringBuilder buf = new StringBuilder()
+            .append(StringUtil.simpleClassName(this))
+            .append("(ridx: ").append(readerIndex)
+            .append(", widx: ").append(writerIndex)
+            .append(", cap: ").append(capacity());
         if (maxCapacity != Integer.MAX_VALUE) {
-            buf.append('/');
-            buf.append(maxCapacity);
+            buf.append('/').append(maxCapacity);
         }
 
         ByteBuf unwrapped = unwrap();
         if (unwrapped != null) {
-            buf.append(", unwrapped: ");
-            buf.append(unwrapped);
+            buf.append(", unwrapped: ").append(unwrapped);
         }
         buf.append(')');
         return buf.toString();

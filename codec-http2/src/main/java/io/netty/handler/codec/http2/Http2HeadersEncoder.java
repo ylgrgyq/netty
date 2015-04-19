@@ -16,11 +16,39 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.util.ByteString;
 
 /**
  * Encodes {@link Http2Headers} into HPACK-encoded headers blocks.
  */
 public interface Http2HeadersEncoder {
+    /**
+     * Configuration related elements for the {@link Http2HeadersEncoder} interface
+     */
+    interface Configuration {
+        /**
+         * Access the Http2HeaderTable for this {@link Http2HeadersEncoder}
+         */
+        Http2HeaderTable headerTable();
+    }
+
+    /**
+     * Determine if a header name/value pair is treated as
+     * <a href="http://tools.ietf.org/html/draft-ietf-httpbis-header-compression-12#section-7.1.3">sensitive</a>.
+     * If the object can be dynamically modified and shared across multiple connections it may need to be thread safe.
+     */
+    interface SensitivityDetector {
+        /**
+         * Determine if a header {@code name}/{@code value} pair should be treated as
+         * <a href="http://tools.ietf.org/html/draft-ietf-httpbis-header-compression-12#section-7.1.3">sensitive</a>.
+         * @param name The name for the header.
+         * @param value The value of the header.
+         * @return {@code true} if a header {@code name}/{@code value} pair should be treated as
+         * <a href="http://tools.ietf.org/html/draft-ietf-httpbis-header-compression-12#section-7.1.3">sensitive</a>.
+         * {@code false} otherwise.
+         */
+        boolean isSensitive(ByteString name, ByteString value);
+    }
 
     /**
      * Encodes the given headers and writes the output headers block to the given output buffer.
@@ -31,22 +59,17 @@ public interface Http2HeadersEncoder {
     void encodeHeaders(Http2Headers headers, ByteBuf buffer) throws Http2Exception;
 
     /**
-     * Updates the maximum header table size for this encoder.
+     * Get the {@link Configuration} for this {@link Http2HeadersEncoder}
      */
-    void maxHeaderTableSize(int size) throws Http2Exception;
+    Configuration configuration();
 
     /**
-     * Gets the current maximum value for the header table size.
+     * Always return {@code false} for {@link SensitivityDetector#isSensitive(ByteString, ByteString)}.
      */
-    int maxHeaderTableSize();
-
-    /**
-     * Sets the maximum allowed header elements.
-     */
-    void maxHeaderListSize(int max);
-
-    /**
-     * Gets the maximum allowed header elements.
-     */
-    int maxHeaderListSize();
+    SensitivityDetector NEVER_SENSITIVE = new SensitivityDetector() {
+        @Override
+        public boolean isSensitive(ByteString name, ByteString value) {
+            return false;
+        }
+    };
 }

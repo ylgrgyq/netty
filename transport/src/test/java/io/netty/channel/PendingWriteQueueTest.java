@@ -23,6 +23,11 @@ import io.netty.util.CharsetUtil;
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.hamcrest.Matchers.*;
+import static org.junit.Assert.*;
+
 public class PendingWriteQueueTest {
 
     @Test
@@ -86,6 +91,55 @@ public class PendingWriteQueueTest {
         }, 3);
     }
 
+    @Test
+    public void shouldFireChannelWritabilityChangedAfterRemoval() {
+        final AtomicReference<ChannelHandlerContext> ctxRef = new AtomicReference<ChannelHandlerContext>();
+        final AtomicReference<PendingWriteQueue> queueRef = new AtomicReference<PendingWriteQueue>();
+        final ByteBuf msg = Unpooled.copiedBuffer("test", CharsetUtil.US_ASCII);
+
+        final EmbeddedChannel channel = new EmbeddedChannel(new ChannelHandlerAdapter() {
+            @Override
+            public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+                ctxRef.set(ctx);
+                queueRef.set(new PendingWriteQueue(ctx));
+            }
+
+            @Override
+            public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+                final PendingWriteQueue queue = queueRef.get();
+
+                final ByteBuf msg = (ByteBuf) queue.current();
+                if (msg == null) {
+                    return;
+                }
+
+                assertThat(msg.refCnt(), is(1));
+
+                // This call will trigger another channelWritabilityChanged() event because the number of
+                // pending bytes will go below the low watermark.
+                //
+                // If PendingWriteQueue.remove() did not remove the current entry before triggering
+                // channelWritabilityChanged() event, we will end up with attempting to remove the same
+                // element twice, resulting in the double release.
+                queue.remove();
+
+                assertThat(msg.refCnt(), is(0));
+            }
+        });
+
+        channel.config().setWriteBufferLowWaterMark(1);
+        channel.config().setWriteBufferHighWaterMark(3);
+
+        final PendingWriteQueue queue = queueRef.get();
+
+        // Trigger channelWritabilityChanged() by adding a message that's larger than the high watermark.
+        queue.add(msg, channel.newPromise());
+
+        channel.finish();
+
+        assertThat(msg.refCnt(), is(0));
+    }
+
     private static void assertWrite(ChannelHandler handler, int count) {
         final ByteBuf buffer = Unpooled.copiedBuffer("Test", CharsetUtil.US_ASCII);
         final EmbeddedChannel channel = new EmbeddedChannel(handler);
@@ -139,6 +193,56 @@ public class PendingWriteQueueTest {
 
         buffer.release();
         Assert.assertNull(channel.readOutbound());
+    }
+
+    @Test
+    public void testRemoveAndFailAllReentrance() {
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelInboundHandlerAdapter());
+        final PendingWriteQueue queue = new PendingWriteQueue(channel.pipeline().firstContext());
+
+        ChannelPromise promise = channel.newPromise();
+        promise.addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) throws Exception {
+                queue.removeAndFailAll(new IllegalStateException());
+            }
+        });
+        queue.add(1L, promise);
+
+        ChannelPromise promise2 = channel.newPromise();
+        queue.add(2L, promise2);
+        queue.removeAndFailAll(new Exception());
+        assertFalse(promise.isSuccess());
+        assertFalse(promise2.isSuccess());
+        assertFalse(channel.finish());
+    }
+
+    @Test
+    public void testRemoveAndWriteAllReentrance() {
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelInboundHandlerAdapter());
+        final PendingWriteQueue queue = new PendingWriteQueue(channel.pipeline().firstContext());
+
+        ChannelPromise promise = channel.newPromise();
+        promise.addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) throws Exception {
+                queue.removeAndWriteAll();
+            }
+        });
+        queue.add(1L, promise);
+
+        ChannelPromise promise2 = channel.newPromise();
+        queue.add(2L, promise2);
+        queue.removeAndWriteAll();
+        channel.flush();
+        assertTrue(promise.isSuccess());
+        assertTrue(promise2.isSuccess());
+        assertTrue(channel.finish());
+
+        assertEquals(1L, channel.readOutbound());
+        assertEquals(2L, channel.readOutbound());
+        assertNull(channel.readOutbound());
+        assertNull(channel.readInbound());
     }
 
     private static class TestHandler extends ChannelDuplexHandler {

@@ -15,6 +15,9 @@
 
 package io.netty.handler.codec.http2;
 
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_HEADER_TABLE_SIZE;
+import static io.netty.handler.codec.http2.Http2TestUtil.as;
+import static io.netty.handler.codec.http2.Http2TestUtil.randomBytes;
 import static io.netty.util.CharsetUtil.UTF_8;
 import static org.junit.Assert.assertEquals;
 import io.netty.buffer.ByteBuf;
@@ -26,7 +29,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 import com.twitter.hpack.Encoder;
-
 
 /**
  * Tests for {@link DefaultHttp2HeadersDecoder}.
@@ -42,26 +44,28 @@ public class DefaultHttp2HeadersDecoderTest {
 
     @Test
     public void decodeShouldSucceed() throws Exception {
-        ByteBuf buf = encode(":method", "GET", "akey", "avalue");
-        Http2Headers headers = decoder.decodeHeaders(buf);
-        assertEquals(2, headers.size());
-        assertEquals("GET", headers.method());
-        assertEquals("avalue", headers.get("akey"));
+        ByteBuf buf = encode(b(":method"), b("GET"), b("akey"), b("avalue"), randomBytes(), randomBytes());
+        try {
+            Http2Headers headers = decoder.decodeHeaders(buf);
+            assertEquals(3, headers.size());
+            assertEquals("GET", headers.method().toString());
+            assertEquals("avalue", headers.get(as("akey")).toString());
+        } finally {
+            buf.release();
+        }
     }
 
-    @Test(expected = Http2Exception.class)
-    public void decodeWithInvalidPseudoHeaderShouldFail() throws Exception {
-        ByteBuf buf = encode(":invalid", "GET", "akey", "avalue");
-        decoder.decodeHeaders(buf);
+    private static byte[] b(String string) {
+        return string.getBytes(UTF_8);
     }
 
-    private ByteBuf encode(String... entries) throws Exception {
-        Encoder encoder = new Encoder();
+    private static ByteBuf encode(byte[]... entries) throws Exception {
+        Encoder encoder = new Encoder(MAX_HEADER_TABLE_SIZE);
         ByteArrayOutputStream stream = new ByteArrayOutputStream();
         for (int ix = 0; ix < entries.length;) {
-            String key = entries[ix++];
-            String value = entries[ix++];
-            encoder.encodeHeader(stream, key.getBytes(UTF_8), value.getBytes(UTF_8), false);
+            byte[] key = entries[ix++];
+            byte[] value = entries[ix++];
+            encoder.encodeHeader(stream, key, value, false);
         }
         return Unpooled.wrappedBuffer(stream.toByteArray());
     }

@@ -15,9 +15,11 @@
  */
 package io.netty.handler.codec.http;
 
+import static io.netty.handler.codec.http.HttpConstants.CR;
+import static io.netty.handler.codec.http.HttpConstants.LF;
+import static io.netty.handler.codec.http.HttpConstants.SP;
 import io.netty.buffer.ByteBuf;
-
-import static io.netty.handler.codec.http.HttpConstants.*;
+import io.netty.util.AsciiString;
 
 /**
  * Encodes an {@link HttpResponse} or an {@link HttpContent} into
@@ -33,9 +35,16 @@ public class HttpResponseEncoder extends HttpObjectEncoder<HttpResponse> {
 
     @Override
     protected void encodeInitialLine(ByteBuf buf, HttpResponse response) throws Exception {
-        response.protocolVersion().encode(buf);
+        AsciiString version = response.protocolVersion().text();
+        buf.writeBytes(version.array());
         buf.writeByte(SP);
-        response.status().encode(buf);
+
+        AsciiString code = response.status().codeAsText();
+        buf.writeBytes(code.array());
+        buf.writeByte(SP);
+
+        AsciiString reasonPhrase = response.status().reasonPhrase();
+        buf.writeBytes(reasonPhrase.array());
         buf.writeBytes(CRLF);
     }
 }

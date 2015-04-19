@@ -15,263 +15,221 @@
 
 package io.netty.handler.codec.http2;
 
-import java.util.Collections;
+import io.netty.handler.codec.BinaryHeaders;
+import io.netty.util.ByteString;
+import io.netty.util.CharsetUtil;
+
 import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
-import java.util.TreeSet;
 
 /**
- * An immutable collection of headers sent or received via HTTP/2.
+ * A collection of headers sent or received via HTTP/2.
  */
-public abstract class Http2Headers implements Iterable<Entry<String, String>> {
-
-    public static final Http2Headers EMPTY_HEADERS = new Http2Headers() {
-
-        @Override
-        public String get(String name) {
-            return null;
-        }
-
-        @Override
-        public List<String> getAll(String name) {
-            return Collections.emptyList();
-        }
-
-        @Override
-        public List<Entry<String, String>> entries() {
-            return Collections.emptyList();
-        }
-
-        @Override
-        public boolean contains(String name) {
-            return false;
-        }
-
-        @Override
-        public boolean isEmpty() {
-            return true;
-        }
-
-        @Override
-        public int size() {
-            return 0;
-        }
-
-        @Override
-        public Set<String> names() {
-            return Collections.emptySet();
-        }
-
-        @Override
-        public Iterator<Entry<String, String>> iterator() {
-            return entries().iterator();
-        }
-    };
-
-    /**
-     * The prefix used to denote an HTTP/2 psuedo-header.
-     */
-    public static String PSEUDO_HEADER_PREFIX = ":";
+public interface Http2Headers extends BinaryHeaders {
 
     /**
      * HTTP/2 pseudo-headers names.
      */
-    public enum PseudoHeaderName {
+    enum PseudoHeaderName {
         /**
          * {@code :method}.
          */
-        METHOD(PSEUDO_HEADER_PREFIX + "method"),
+        METHOD(":method"),
 
         /**
          * {@code :scheme}.
          */
-        SCHEME(PSEUDO_HEADER_PREFIX + "scheme"),
+        SCHEME(":scheme"),
 
         /**
          * {@code :authority}.
          */
-        AUTHORITY(PSEUDO_HEADER_PREFIX + "authority"),
+        AUTHORITY(":authority"),
 
         /**
          * {@code :path}.
          */
-        PATH(PSEUDO_HEADER_PREFIX + "path"),
+        PATH(":path"),
 
         /**
          * {@code :status}.
          */
-        STATUS(PSEUDO_HEADER_PREFIX + "status");
+        STATUS(":status");
 
-        private final String value;
-
-        PseudoHeaderName(String value) {
-            this.value = value;
+        private final ByteString value;
+        private static final Set<ByteString> PSEUDO_HEADERS = new HashSet<ByteString>();
+        static {
+            for (PseudoHeaderName pseudoHeader : PseudoHeaderName.values()) {
+                PSEUDO_HEADERS.add(pseudoHeader.value());
+            }
         }
 
-        public String value() {
+        PseudoHeaderName(String value) {
+            this.value = new ByteString(value, CharsetUtil.UTF_8);
+        }
+
+        public ByteString value() {
+            // Return a slice so that the buffer gets its own reader index.
             return value;
         }
 
         /**
          * Indicates whether the given header name is a valid HTTP/2 pseudo header.
          */
-        public static boolean isPseudoHeader(String header) {
-            if (header == null || !header.startsWith(Http2Headers.PSEUDO_HEADER_PREFIX)) {
-                // Not a pseudo-header.
-                return false;
-            }
-
-            // Check the header name against the set of valid pseudo-headers.
-            for (PseudoHeaderName pseudoHeader : PseudoHeaderName.values()) {
-                String pseudoHeaderName = pseudoHeader.value();
-                if (pseudoHeaderName.equals(header)) {
-                    // It's a valid pseudo-header.
-                    return true;
-                }
-            }
-            return false;
+        public static boolean isPseudoHeader(ByteString header) {
+            return PSEUDO_HEADERS.contains(header);
         }
     }
 
-    /**
-     * Returns the {@link Set} of all header names.
-     */
-    public abstract Set<String> names();
+    @Override
+    Http2Headers add(ByteString name, ByteString value);
+
+    @Override
+    Http2Headers add(ByteString name, Iterable<? extends ByteString> values);
+
+    @Override
+    Http2Headers add(ByteString name, ByteString... values);
+
+    @Override
+    Http2Headers addObject(ByteString name, Object value);
+
+    @Override
+    Http2Headers addObject(ByteString name, Iterable<?> values);
+
+    @Override
+    Http2Headers addObject(ByteString name, Object... values);
+
+    @Override
+    Http2Headers addBoolean(ByteString name, boolean value);
+
+    @Override
+    Http2Headers addByte(ByteString name, byte value);
+
+    @Override
+    Http2Headers addChar(ByteString name, char value);
+
+    @Override
+    Http2Headers addShort(ByteString name, short value);
+
+    @Override
+    Http2Headers addInt(ByteString name, int value);
+
+    @Override
+    Http2Headers addLong(ByteString name, long value);
+
+    @Override
+    Http2Headers addFloat(ByteString name, float value);
+
+    @Override
+    Http2Headers addDouble(ByteString name, double value);
+
+    @Override
+    Http2Headers addTimeMillis(ByteString name, long value);
+
+    @Override
+    Http2Headers add(BinaryHeaders headers);
+
+    @Override
+    Http2Headers set(ByteString name, ByteString value);
+
+    @Override
+    Http2Headers set(ByteString name, Iterable<? extends ByteString> values);
+
+    @Override
+    Http2Headers set(ByteString name, ByteString... values);
+
+    @Override
+    Http2Headers setObject(ByteString name, Object value);
+
+    @Override
+    Http2Headers setObject(ByteString name, Iterable<?> values);
+
+    @Override
+    Http2Headers setObject(ByteString name, Object... values);
+
+    @Override
+    Http2Headers setBoolean(ByteString name, boolean value);
+
+    @Override
+    Http2Headers setByte(ByteString name, byte value);
+
+    @Override
+    Http2Headers setChar(ByteString name, char value);
+
+    @Override
+    Http2Headers setShort(ByteString name, short value);
+
+    @Override
+    Http2Headers setInt(ByteString name, int value);
+
+    @Override
+    Http2Headers setLong(ByteString name, long value);
+
+    @Override
+    Http2Headers setFloat(ByteString name, float value);
+
+    @Override
+    Http2Headers setDouble(ByteString name, double value);
+
+    @Override
+    Http2Headers setTimeMillis(ByteString name, long value);
+
+    @Override
+    Http2Headers set(BinaryHeaders headers);
+
+    @Override
+    Http2Headers setAll(BinaryHeaders headers);
+
+    @Override
+    Http2Headers clear();
 
     /**
-     * Returns the header value with the specified header name. If there is more than one header
-     * value for the specified header name, the first value is returned.
-     *
-     * @return the header value or {@code null} if there is no such header
+     * Sets the {@link PseudoHeaderName#METHOD} header or {@code null} if there is no such header
      */
-    public abstract String get(String name);
+    Http2Headers method(ByteString value);
 
     /**
-     * Returns the header values with the specified header name.
-     *
-     * @return the {@link List} of header values. An empty list if there is no such header.
+     * Sets the {@link PseudoHeaderName#SCHEME} header if there is no such header
      */
-    public abstract List<String> getAll(String name);
+    Http2Headers scheme(ByteString value);
 
     /**
-     * Returns all header names and values that this frame contains.
-     *
-     * @return the {@link List} of the header name-value pairs. An empty list if there is no header
-     *         in this message.
+     * Sets the {@link PseudoHeaderName#AUTHORITY} header or {@code null} if there is no such header
      */
-    public abstract List<Map.Entry<String, String>> entries();
+    Http2Headers authority(ByteString value);
 
     /**
-     * Returns {@code true} if and only if there is a header with the specified header name.
+     * Sets the {@link PseudoHeaderName#PATH} header or {@code null} if there is no such header
      */
-    public abstract boolean contains(String name);
+    Http2Headers path(ByteString value);
 
     /**
-     * Checks if no header exists.
+     * Sets the {@link PseudoHeaderName#STATUS} header or {@code null} if there is no such header
      */
-    public abstract boolean isEmpty();
-
-    /**
-     * Gets the number of headers contained in this object.
-     */
-    public abstract int size();
+    Http2Headers status(ByteString value);
 
     /**
      * Gets the {@link PseudoHeaderName#METHOD} header or {@code null} if there is no such header
      */
-    public final String method() {
-        return get(PseudoHeaderName.METHOD.value());
-    }
+    ByteString method();
 
     /**
      * Gets the {@link PseudoHeaderName#SCHEME} header or {@code null} if there is no such header
      */
-    public final String scheme() {
-        return get(PseudoHeaderName.SCHEME.value());
-    }
+    ByteString scheme();
 
     /**
      * Gets the {@link PseudoHeaderName#AUTHORITY} header or {@code null} if there is no such header
      */
-    public final String authority() {
-        return get(PseudoHeaderName.AUTHORITY.value());
-    }
+    ByteString authority();
 
     /**
      * Gets the {@link PseudoHeaderName#PATH} header or {@code null} if there is no such header
      */
-    public final String path() {
-        return get(PseudoHeaderName.PATH.value());
-    }
+    ByteString path();
 
     /**
      * Gets the {@link PseudoHeaderName#STATUS} header or {@code null} if there is no such header
      */
-    public final String status() {
-        return get(PseudoHeaderName.STATUS.value());
-    }
-
-    @Override
-    public int hashCode() {
-        final int prime = 31;
-        int result = 1;
-        for (String name : names()) {
-            result = prime * result + name.hashCode();
-            Set<String> values = new TreeSet<String>(getAll(name));
-            for (String value : values) {
-                result = prime * result + value.hashCode();
-            }
-        }
-        return result;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (!(o instanceof Http2Headers)) {
-            return false;
-        }
-        Http2Headers other = (Http2Headers) o;
-
-        // First, check that the set of names match.
-        Set<String> names = names();
-        if (!names.equals(other.names())) {
-            return false;
-        }
-
-        // Compare the values for each name.
-        for (String name : names) {
-            List<String> values = getAll(name);
-            List<String> otherValues = other.getAll(name);
-            if (values.size() != otherValues.size()) {
-                return false;
-            }
-            // Convert the values to a set and remove values from the other object to see if
-            // they match.
-            Set<String> valueSet = new HashSet<String>(values);
-            valueSet.removeAll(otherValues);
-            if (!valueSet.isEmpty()) {
-                return false;
-            }
-        }
-
-        // They match.
-        return true;
-    }
-
-    @Override
-    public String toString() {
-        StringBuilder builder = new StringBuilder("Http2Headers[");
-        for (Map.Entry<String, String> header : this) {
-            builder.append(header.getKey());
-            builder.append(':');
-            builder.append(header.getValue());
-            builder.append(',');
-        }
-        builder.append(']');
-        return builder.toString();
-    }
+    ByteString status();
 }

@@ -15,40 +15,15 @@
  */
 package io.netty.handler.codec.socksx;
 
+import io.netty.handler.codec.DecoderResultProvider;
+
 /**
- * An abstract class that defines a SocksMessage, providing common properties for
- * {@link SocksRequest} and {@link SocksResponse}.
+ * An interface that all SOCKS protocol messages implement.
  */
-public abstract class SocksMessage {
-    private final SocksMessageType type;
-    private final SocksProtocolVersion protocolVersion;
-
-    protected SocksMessage(SocksProtocolVersion protocolVersion, SocksMessageType type) {
-        if (protocolVersion == null) {
-            throw new NullPointerException("protocolVersion");
-        }
-        if (type == null) {
-            throw new NullPointerException("type");
-        }
-        this.protocolVersion = protocolVersion;
-        this.type = type;
-    }
+public interface SocksMessage extends DecoderResultProvider {
 
     /**
-     * Returns the {@link SocksMessageType} of this {@link SocksMessage}
-     *
-     * @return The {@link SocksMessageType} of this {@link SocksMessage}
+     * Returns the protocol version of this message.
      */
-    public SocksMessageType type() {
-        return type;
-    }
-
-    /**
-     * Returns the {@link SocksProtocolVersion} of this {@link SocksMessage}
-     *
-     * @return The {@link SocksProtocolVersion} of this {@link SocksMessage}
-     */
-    public SocksProtocolVersion protocolVersion() {
-        return protocolVersion;
-    }
+    SocksVersion version();
 }

@@ -14,63 +14,62 @@
  */
 package io.netty.example.http2.client;
 
+import static io.netty.handler.logging.LogLevel.INFO;
+
 import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.handler.codec.http2.DefaultHttp2Connection;
-import io.netty.handler.codec.http2.DefaultHttp2FrameReader;
-import io.netty.handler.codec.http2.DefaultHttp2FrameWriter;
-import io.netty.handler.codec.http2.DefaultHttp2InboundFlowController;
-import io.netty.handler.codec.http2.DefaultHttp2OutboundFlowController;
-import io.netty.handler.codec.http2.DelegatingHttp2ConnectionHandler;
-import io.netty.handler.codec.http2.DelegatingHttp2HttpConnectionHandler;
-import io.netty.handler.codec.http2.Http2Connection;
-import io.netty.handler.codec.http2.Http2FrameReader;
-import io.netty.handler.codec.http2.Http2FrameWriter;
-import io.netty.handler.codec.http2.Http2InboundFrameLogger;
-import io.netty.handler.codec.http2.Http2OutboundFrameLogger;
-import io.netty.handler.codec.http.HttpContentDecompressor;
-import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpClientUpgradeHandler;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http2.Http2FrameLogger;
-import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapter;
+import io.netty.handler.codec.http2.DefaultHttp2Connection;
+import io.netty.handler.codec.http2.DefaultHttp2FrameReader;
+import io.netty.handler.codec.http2.DefaultHttp2FrameWriter;
+import io.netty.handler.codec.http2.DelegatingDecompressorFrameListener;
 import io.netty.handler.codec.http2.Http2ClientUpgradeCodec;
+import io.netty.handler.codec.http2.Http2Connection;
+import io.netty.handler.codec.http2.Http2FrameLogger;
+import io.netty.handler.codec.http2.Http2FrameReader;
+import io.netty.handler.codec.http2.Http2FrameWriter;
+import io.netty.handler.codec.http2.Http2InboundFrameLogger;
+import io.netty.handler.codec.http2.Http2OutboundFrameLogger;
+import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandler;
+import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapter;
 import io.netty.handler.ssl.SslContext;
-import io.netty.util.internal.logging.InternalLoggerFactory;
-
-import static io.netty.util.internal.logging.InternalLogLevel.*;
 
 /**
  * Configures the client pipeline to support HTTP/2 frames.
  */
 public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
-    private static final Http2FrameLogger logger =
-                    new Http2FrameLogger(INFO, InternalLoggerFactory.getInstance(Http2ClientInitializer.class));
+    private static final Http2FrameLogger logger = new Http2FrameLogger(INFO, Http2ClientInitializer.class);
 
     private final SslContext sslCtx;
-    private final long maxContentLength;
-    private DelegatingHttp2ConnectionHandler connectionHandler;
+    private final int maxContentLength;
+    private HttpToHttp2ConnectionHandler connectionHandler;
     private HttpResponseHandler responseHandler;
     private Http2SettingsHandler settingsHandler;
 
-    public Http2ClientInitializer(SslContext sslCtx, long maxContentLength) {
+    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength) {
         this.sslCtx = sslCtx;
         this.maxContentLength = maxContentLength;
     }
 
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
-        Http2Connection connection = new DefaultHttp2Connection(false);
-        connectionHandler = new DelegatingHttp2HttpConnectionHandler(connection,
-                        frameReader(), frameWriter(), new DefaultHttp2InboundFlowController(connection),
-                        new DefaultHttp2OutboundFlowController(connection),
-                        InboundHttp2ToHttpAdapter.newInstance(connection, maxContentLength));
+        final Http2Connection connection = new DefaultHttp2Connection(false);
+        final Http2FrameWriter frameWriter = frameWriter();
+        connectionHandler = new HttpToHttp2ConnectionHandler(connection,
+                frameReader(),
+                frameWriter,
+                new DelegatingDecompressorFrameListener(connection,
+                        new InboundHttp2ToHttpAdapter.Builder(connection)
+                                .maxContentLength(maxContentLength)
+                                .propagateSettings(true)
+                                .build()));
         responseHandler = new HttpResponseHandler();
         settingsHandler = new Http2SettingsHandler(ch.newPromise());
         if (sslCtx != null) {
@@ -90,8 +89,6 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
 
     protected void configureEndOfPipeline(ChannelPipeline pipeline) {
         pipeline.addLast("Http2SettingsHandler", settingsHandler);
-        pipeline.addLast("Decompressor", new HttpContentDecompressor());
-        pipeline.addLast("Aggregator", new HttpObjectAggregator((int) maxContentLength));
         pipeline.addLast("HttpResponseHandler", responseHandler);
     }
 

@@ -24,12 +24,15 @@ import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.NoRouteToHostException;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A skeletal {@link Channel} implementation.
@@ -372,28 +375,28 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 dstAddr = localAddr;
             }
 
-            StringBuilder buf = new StringBuilder(96);
-            buf.append("[id: 0x");
-            buf.append(id.asShortText());
-            buf.append(", ");
-            buf.append(srcAddr);
-            buf.append(active? " => " : " :> ");
-            buf.append(dstAddr);
-            buf.append(']');
+            StringBuilder buf = new StringBuilder(96)
+                .append("[id: 0x")
+                .append(id.asShortText())
+                .append(", ")
+                .append(srcAddr)
+                .append(active? " => " : " :> ")
+                .append(dstAddr)
+                .append(']');
             strVal = buf.toString();
         } else if (localAddr != null) {
-            StringBuilder buf = new StringBuilder(64);
-            buf.append("[id: 0x");
-            buf.append(id.asShortText());
-            buf.append(", ");
-            buf.append(localAddr);
-            buf.append(']');
+            StringBuilder buf = new StringBuilder(64)
+                .append("[id: 0x")
+                .append(id.asShortText())
+                .append(", ")
+                .append(localAddr)
+                .append(']');
             strVal = buf.toString();
         } else {
-            StringBuilder buf = new StringBuilder(16);
-            buf.append("[id: 0x");
-            buf.append(id.asShortText());
-            buf.append(']');
+            StringBuilder buf = new StringBuilder(16)
+                .append("[id: 0x")
+                .append(id.asShortText())
+                .append(']');
             strVal = buf.toString();
         }
 
@@ -421,6 +424,8 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         private ChannelOutboundBuffer outboundBuffer = new ChannelOutboundBuffer(AbstractChannel.this);
         private RecvByteBufAllocator.Handle recvHandle;
         private boolean inFlush0;
+        /** true if the channel has never been registered, false otherwise */
+        private boolean neverRegistered = true;
 
         @Override
         public RecvByteBufAllocator.Handle recvBufAllocHandle() {
@@ -433,7 +438,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         @Override
         public final ChannelHandlerInvoker invoker() {
             // return the unwrapped invoker.
-            return ((PausableChannelEventLoop) eventLoop().asInvoker()).unwrapInvoker();
+            return ((PausableChannelEventExecutor) eventLoop().asInvoker()).unwrapInvoker();
         }
 
         @Override
@@ -505,12 +510,16 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 if (!promise.setUncancellable() || !ensureOpen(promise)) {
                     return;
                 }
+                boolean firstRegistration = neverRegistered;
                 doRegister();
+                neverRegistered = false;
                 registered = true;
-                AbstractChannel.this.eventLoop.acceptNewTasks();
+                eventLoop.acceptNewTasks();
                 safeSetSuccess(promise);
                 pipeline.fireChannelRegistered();
-                if (isActive()) {
+                // Only fire a channelActive if the channel has never been registered. This prevents firing
+                // multiple channel actives if the channel is deregistered and re-registered.
+                if (firstRegistration && isActive()) {
                     pipeline.fireChannelActive();
                 }
             } catch (Throwable t) {
@@ -528,10 +537,10 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             }
 
             // See: https://github.com/netty/netty/issues/576
-            if (!PlatformDependent.isWindows() && !PlatformDependent.isRoot() &&
-                Boolean.TRUE.equals(config().getOption(ChannelOption.SO_BROADCAST)) &&
+            if (Boolean.TRUE.equals(config().getOption(ChannelOption.SO_BROADCAST)) &&
                 localAddress instanceof InetSocketAddress &&
-                !((InetSocketAddress) localAddress).getAddress().isAnyLocalAddress()) {
+                !((InetSocketAddress) localAddress).getAddress().isAnyLocalAddress() &&
+                !PlatformDependent.isWindows() && !PlatformDependent.isRoot()) {
                 // Warn a user about the fact that a non-root user can't receive a
                 // broadcast packet on *nix if the socket is bound on non-wildcard address.
                 logger.warn(
@@ -605,25 +614,60 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 return;
             }
 
+            if (outboundBuffer == null) {
+                // This means close() was called before so we just register a listener and return
+                closeFuture.addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture future) throws Exception {
+                        promise.setSuccess();
+                    }
+                });
+                return;
+            }
+
             if (closeFuture.isDone()) {
                 // Closed already.
                 safeSetSuccess(promise);
                 return;
             }
 
-            boolean wasActive = isActive();
-            ChannelOutboundBuffer outboundBuffer = this.outboundBuffer;
-            this.outboundBuffer = null; // Disallow adding any messages and flushes to outboundBuffer.
-
-            try {
-                doClose();
-                closeFuture.setClosed();
-                safeSetSuccess(promise);
-            } catch (Throwable t) {
-                closeFuture.setClosed();
-                safeSetFailure(promise, t);
+            final boolean wasActive = isActive();
+            final ChannelOutboundBuffer buffer = outboundBuffer;
+            outboundBuffer = null; // Disallow adding any messages and flushes to outboundBuffer.
+            Executor closeExecutor = closeExecutor();
+            if (closeExecutor != null) {
+                closeExecutor.execute(new OneTimeTask() {
+                    @Override
+                    public void run() {
+                        Throwable cause = null;
+                        try {
+                            doClose();
+                        } catch (Throwable t) {
+                            cause = t;
+                        }
+                        final Throwable error = cause;
+                        // Call invokeLater so closeAndDeregister is executed in the EventLoop again!
+                        invokeLater(new OneTimeTask() {
+                            @Override
+                            public void run() {
+                                closeAndDeregister(buffer, wasActive, promise, error);
+                            }
+                        });
+                    }
+                });
+            } else {
+                Throwable error = null;
+                try {
+                    doClose();
+                } catch (Throwable t) {
+                    error = t;
+                }
+                closeAndDeregister(buffer, wasActive, promise, error);
             }
+        }
 
+        private void closeAndDeregister(ChannelOutboundBuffer outboundBuffer, final boolean wasActive,
+                                        ChannelPromise promise, Throwable error) {
             // Fail all the queued messages
             try {
                 outboundBuffer.failFlushed(CLOSED_CHANNEL_EXCEPTION);
@@ -644,6 +688,14 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                             deregister(voidPromise());
                         }
                     });
+                }
+
+                // Now complete the closeFuture and promise.
+                closeFuture.setClosed();
+                if (error != null) {
+                    safeSetFailure(promise, error);
+                } else {
+                    safeSetSuccess(promise);
                 }
             }
         }
@@ -846,6 +898,36 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             } catch (RejectedExecutionException e) {
                 logger.warn("Can't invoke task later as EventLoop rejected it", e);
             }
+        }
+
+        /**
+         * Appends the remote address to the message of the exceptions caused by connection attempt failure.
+         */
+        protected final Throwable annotateConnectException(Throwable cause, SocketAddress remoteAddress) {
+            if (cause instanceof ConnectException) {
+                Throwable newT = new ConnectException(cause.getMessage() + ": " + remoteAddress);
+                newT.setStackTrace(cause.getStackTrace());
+                cause = newT;
+            } else if (cause instanceof NoRouteToHostException) {
+                Throwable newT = new NoRouteToHostException(cause.getMessage() + ": " + remoteAddress);
+                newT.setStackTrace(cause.getStackTrace());
+                cause = newT;
+            } else if (cause instanceof SocketException) {
+                Throwable newT = new SocketException(cause.getMessage() + ": " + remoteAddress);
+                newT.setStackTrace(cause.getStackTrace());
+                cause = newT;
+            }
+
+            return cause;
+        }
+
+        /**
+         * @return {@link Executor} to execute {@link #doClose()} or {@code null} if it should be done in the
+         * {@link EventLoop}.
+         +
+         */
+        protected Executor closeExecutor() {
+            return null;
         }
     }
 

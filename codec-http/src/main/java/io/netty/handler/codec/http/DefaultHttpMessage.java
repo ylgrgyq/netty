@@ -15,10 +15,6 @@
  */
 package io.netty.handler.codec.http;
 
-import io.netty.util.internal.StringUtil;
-
-import java.util.Map;
-
 /**
  * The default {@link HttpMessage} implementation.
  */
@@ -31,18 +27,18 @@ public abstract class DefaultHttpMessage extends DefaultHttpObject implements Ht
      * Creates a new instance.
      */
     protected DefaultHttpMessage(final HttpVersion version) {
-        this(version, true);
+        this(version, true, false);
     }
 
     /**
      * Creates a new instance.
      */
-    protected DefaultHttpMessage(final HttpVersion version, boolean validateHeaders) {
+    protected DefaultHttpMessage(final HttpVersion version, boolean validateHeaders, boolean singleHeaderFields) {
         if (version == null) {
             throw new NullPointerException("version");
         }
         this.version = version;
-        headers = new DefaultHttpHeaders(validateHeaders);
+        headers = new DefaultHttpHeaders(validateHeaders, singleHeaderFields);
     }
 
     @Override
@@ -78,37 +74,11 @@ public abstract class DefaultHttpMessage extends DefaultHttpObject implements Ht
     }
 
     @Override
-    public String toString() {
-        StringBuilder buf = new StringBuilder();
-        buf.append(StringUtil.simpleClassName(this));
-        buf.append("(version: ");
-        buf.append(protocolVersion().text());
-        buf.append(", keepAlive: ");
-        buf.append(HttpHeaderUtil.isKeepAlive(this));
-        buf.append(')');
-        buf.append(StringUtil.NEWLINE);
-        appendHeaders(buf);
-
-        // Remove the last newline.
-        buf.setLength(buf.length() - StringUtil.NEWLINE.length());
-        return buf.toString();
-    }
-
-    @Override
     public HttpMessage setProtocolVersion(HttpVersion version) {
         if (version == null) {
             throw new NullPointerException("version");
         }
         this.version = version;
         return this;
-    }
-
-    void appendHeaders(StringBuilder buf) {
-        for (Map.Entry<String, String> e: headers()) {
-            buf.append(e.getKey());
-            buf.append(": ");
-            buf.append(e.getValue());
-            buf.append(StringUtil.NEWLINE);
-        }
     }
 }

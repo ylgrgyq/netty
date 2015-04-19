@@ -15,7 +15,15 @@
 
 package io.netty.handler.codec.http2;
 
-import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_UNSIGNED_INT;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_CONCURRENT_STREAMS;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_HEADER_LIST_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_HEADER_TABLE_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_INITIAL_WINDOW_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_CONCURRENT_STREAMS;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_HEADER_LIST_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_HEADER_TABLE_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_INITIAL_WINDOW_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.NUM_STANDARD_SETTINGS;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_ENABLE_PUSH;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_HEADER_TABLE_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_INITIAL_WINDOW_SIZE;
@@ -23,17 +31,24 @@ import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_MAX_CONCURREN
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_MAX_FRAME_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_MAX_HEADER_LIST_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.isMaxFrameSizeValid;
-import io.netty.util.collection.IntObjectHashMap;
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
+
+import io.netty.util.collection.CharObjectHashMap;
 
 /**
  * Settings for one endpoint in an HTTP/2 connection. Each of the values are optional as defined in
  * the spec for the SETTINGS frame. Permits storage of arbitrary key/value pairs but provides helper
  * methods for standard settings.
  */
-public final class Http2Settings extends IntObjectHashMap<Long> {
+public final class Http2Settings extends CharObjectHashMap<Long> {
+    /**
+     * Default capacity based on the number of standard settings from the HTTP/2 spec, adjusted so that adding all of
+     * the standard settings will not cause the map capacity to change.
+     */
+    private static final int DEFAULT_CAPACITY = (int) (NUM_STANDARD_SETTINGS / DEFAULT_LOAD_FACTOR) + 1;
 
     public Http2Settings() {
-        this(6 /* number of standard settings */);
+        this(DEFAULT_CAPACITY);
     }
 
     public Http2Settings(int initialCapacity, float loadFactor) {
@@ -45,12 +60,13 @@ public final class Http2Settings extends IntObjectHashMap<Long> {
     }
 
     /**
-     * Overrides the superclass method to perform verification of standard HTTP/2 settings.
+     * Adds the given setting key/value pair. For standard settings defined by the HTTP/2 spec, performs
+     * validation on the values.
      *
-     * @throws IllegalArgumentException if verification of the setting fails.
+     * @throws IllegalArgumentException if verification for a standard HTTP/2 setting fails.
      */
     @Override
-    public Long put(int key, Long value) {
+    public Long put(char key, Long value) {
         verifyStandardSetting(key, value);
         return super.put(key, value);
     }
@@ -67,8 +83,8 @@ public final class Http2Settings extends IntObjectHashMap<Long> {
      *
      * @throws IllegalArgumentException if verification of the setting fails.
      */
-    public Http2Settings headerTableSize(long value) {
-        put(SETTINGS_HEADER_TABLE_SIZE, value);
+    public Http2Settings headerTableSize(int value) {
+        put(SETTINGS_HEADER_TABLE_SIZE, (long) value);
         return this;
     }
 
@@ -168,7 +184,12 @@ public final class Http2Settings extends IntObjectHashMap<Long> {
         return this;
     }
 
-    Integer getIntValue(int key) {
+    /**
+     * A helper method that returns {@link Long#intValue()} on the return of {@link #get(char)}, if present. Note that
+     * if the range of the value exceeds {@link Integer#MAX_VALUE}, the {@link #get(char)} method should
+     * be used instead to avoid truncation of the value.
+     */
+    public Integer getIntValue(char key) {
         Long value = get(key);
         if (value == null) {
             return null;
@@ -176,15 +197,12 @@ public final class Http2Settings extends IntObjectHashMap<Long> {
         return value.intValue();
     }
 
-    private void verifyStandardSetting(int key, Long value) {
-        if (value == null) {
-            throw new NullPointerException("value");
-        }
+    private static void verifyStandardSetting(int key, Long value) {
+        checkNotNull(value, "value");
         switch (key) {
             case SETTINGS_HEADER_TABLE_SIZE:
-                if (value < 0L || value > MAX_UNSIGNED_INT) {
-                    throw new IllegalArgumentException("Setting HEADER_TABLE_SIZE is invalid: "
-                            + value);
+                if (value < MIN_HEADER_TABLE_SIZE || value > MAX_HEADER_TABLE_SIZE) {
+                    throw new IllegalArgumentException("Setting HEADER_TABLE_SIZE is invalid: " + value);
                 }
                 break;
             case SETTINGS_ENABLE_PUSH:
@@ -193,29 +211,51 @@ public final class Http2Settings extends IntObjectHashMap<Long> {
                 }
                 break;
             case SETTINGS_MAX_CONCURRENT_STREAMS:
-                if (value < 0L || value > MAX_UNSIGNED_INT) {
+                if (value < MIN_CONCURRENT_STREAMS || value > MAX_CONCURRENT_STREAMS) {
                     throw new IllegalArgumentException(
                             "Setting MAX_CONCURRENT_STREAMS is invalid: " + value);
                 }
                 break;
             case SETTINGS_INITIAL_WINDOW_SIZE:
-                if (value < 0L || value > Integer.MAX_VALUE) {
+                if (value < MIN_INITIAL_WINDOW_SIZE || value > MAX_INITIAL_WINDOW_SIZE) {
                     throw new IllegalArgumentException("Setting INITIAL_WINDOW_SIZE is invalid: "
                             + value);
                 }
                 break;
             case SETTINGS_MAX_FRAME_SIZE:
                 if (!isMaxFrameSizeValid(value.intValue())) {
-                    throw new IllegalArgumentException("Setting MAX_FRAME_SIZE is invalid: "
-                            + value);
+                    throw new IllegalArgumentException("Setting MAX_FRAME_SIZE is invalid: " + value);
                 }
                 break;
             case SETTINGS_MAX_HEADER_LIST_SIZE:
-                if (value < 0) {
-                    throw new IllegalArgumentException("Setting MAX_HEADER_LIST_SIZE is invalid: "
-                            + value);
+                if (value < MIN_HEADER_LIST_SIZE || value > MAX_HEADER_LIST_SIZE) {
+                    throw new IllegalArgumentException("Setting MAX_HEADER_LIST_SIZE is invalid: " + value);
                 }
                 break;
+            default:
+                // Non-standard HTTP/2 setting - don't do validation.
+                break;
+        }
+    }
+
+    @Override
+    protected String keyToString(char key) {
+        switch (key) {
+            case SETTINGS_HEADER_TABLE_SIZE:
+                return "HEADER_TABLE_SIZE";
+            case SETTINGS_ENABLE_PUSH:
+                return "ENABLE_PUSH";
+            case SETTINGS_MAX_CONCURRENT_STREAMS:
+                return "MAX_CONCURRENT_STREAMS";
+            case SETTINGS_INITIAL_WINDOW_SIZE:
+                return "INITIAL_WINDOW_SIZE";
+            case SETTINGS_MAX_FRAME_SIZE:
+                return "MAX_FRAME_SIZE";
+            case SETTINGS_MAX_HEADER_LIST_SIZE:
+                return "MAX_HEADER_LIST_SIZE";
+            default:
+                // Unknown keys.
+                return super.keyToString(key);
         }
     }
 }

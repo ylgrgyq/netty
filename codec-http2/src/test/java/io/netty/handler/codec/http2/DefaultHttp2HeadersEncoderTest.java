@@ -15,13 +15,13 @@
 
 package io.netty.handler.codec.http2;
 
+import static io.netty.handler.codec.http2.Http2TestUtil.as;
 import static org.junit.Assert.assertTrue;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
 import org.junit.Before;
 import org.junit.Test;
-
 
 /**
  * Tests for {@link DefaultHttp2HeadersEncoder}.
@@ -37,19 +37,25 @@ public class DefaultHttp2HeadersEncoderTest {
 
     @Test
     public void encodeShouldSucceed() throws Http2Exception {
-        DefaultHttp2Headers headers =
-                DefaultHttp2Headers.newBuilder().method("GET").add("a", "1").add("a", "2").build();
+        Http2Headers headers = headers();
         ByteBuf buf = Unpooled.buffer();
-        encoder.encodeHeaders(headers, buf);
-        assertTrue(buf.writerIndex() > 0);
+        try {
+            encoder.encodeHeaders(headers, buf);
+            assertTrue(buf.writerIndex() > 0);
+        } finally {
+            buf.release();
+        }
     }
 
     @Test(expected = Http2Exception.class)
     public void headersExceedMaxSetSizeShouldFail() throws Http2Exception {
-        DefaultHttp2Headers headers =
-                DefaultHttp2Headers.newBuilder().method("GET").add("a", "1").add("a", "2").build();
-
-        encoder.maxHeaderListSize(2);
+        Http2Headers headers = headers();
+        encoder.headerTable().maxHeaderListSize(2);
         encoder.encodeHeaders(headers, Unpooled.buffer());
+    }
+
+    private static Http2Headers headers() {
+        return new DefaultHttp2Headers().method(as("GET")).add(as("a"), as("1"))
+                .add(as("a"), as("2"));
     }
 }

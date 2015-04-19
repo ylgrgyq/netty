@@ -17,9 +17,14 @@
 package io.netty.handler.codec;
 
 
-import io.netty.buffer.ByteBuf;
+import java.util.Map.Entry;
 
-public final class AsciiHeadersEncoder implements TextHeaderProcessor {
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.handler.codec.TextHeaders.EntryVisitor;
+import io.netty.util.AsciiString;
+
+public final class AsciiHeadersEncoder implements EntryVisitor {
 
     /**
      * The separator characters to insert between a header name and a header value.
@@ -74,7 +79,9 @@ public final class AsciiHeadersEncoder implements TextHeaderProcessor {
     }
 
     @Override
-    public boolean process(CharSequence name, CharSequence value) throws Exception {
+    public boolean visit(Entry<CharSequence, CharSequence> entry) throws Exception {
+        final CharSequence name = entry.getKey();
+        final CharSequence value = entry.getValue();
         final ByteBuf buf = this.buf;
         final int nameLen = name.length();
         final int valueLen = value.length();
@@ -124,7 +131,7 @@ public final class AsciiHeadersEncoder implements TextHeaderProcessor {
     }
 
     private static void writeAsciiString(ByteBuf buf, int offset, AsciiString value, int valueLen) {
-        value.copy(0, buf, offset, valueLen);
+        ByteBufUtil.copy(value, 0, buf, offset, valueLen);
     }
 
     private static void writeCharSequence(ByteBuf buf, int offset, CharSequence value, int valueLen) {

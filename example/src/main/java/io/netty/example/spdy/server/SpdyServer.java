@@ -24,10 +24,14 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.spdy.SpdyOrHttpChooser.SelectedProtocol;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.IdentityCipherSuiteFilter;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-
-import java.util.Arrays;
 
 /**
  * A SPDY Server that responds to a GET request with a Hello World.
@@ -54,10 +58,14 @@ public final class SpdyServer {
     public static void main(String[] args) throws Exception {
         // Configure SSL.
         SelfSignedCertificate ssc = new SelfSignedCertificate();
-        SslContext sslCtx = SslContext.newServerContext(
-                ssc.certificate(), ssc.privateKey(), null, null,
-                Arrays.asList(SelectedProtocol.SPDY_3_1.protocolName(), SelectedProtocol.HTTP_1_1.protocolName()),
-                0, 0);
+        SslContext sslCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+            .applicationProtocolConfig(new ApplicationProtocolConfig(
+                        Protocol.NPN,
+                        SelectorFailureBehavior.CHOOSE_MY_LAST_PROTOCOL,
+                        SelectedListenerFailureBehavior.CHOOSE_MY_LAST_PROTOCOL,
+                        SelectedProtocol.SPDY_3_1.protocolName(),
+                        SelectedProtocol.HTTP_1_1.protocolName()))
+            .build();
 
         // Configure the server.
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);

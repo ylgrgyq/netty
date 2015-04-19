@@ -129,7 +129,7 @@ final class PoolThreadCache {
             int cacheSize, int maxCachedBufferCapacity, PoolArena<T> area) {
         if (cacheSize > 0) {
             int max = Math.min(area.chunkSize, maxCachedBufferCapacity);
-            int arraySize = Math.max(1, max / area.pageSize);
+            int arraySize = Math.max(1, log2(max / area.pageSize) + 1);
 
             @SuppressWarnings("unchecked")
             NormalMemoryRegionCache<T>[] cache = new NormalMemoryRegionCache[arraySize];
@@ -337,6 +337,9 @@ final class PoolThreadCache {
 
     /**
      * Cache of {@link PoolChunk} and handles which can be used to allocate a buffer without locking at all.
+     *
+     * The {@link MemoryRegionCache} uses a LIFO implementation as this way it is more likely that the
+     * cached memory is still in the loaded cache-line and so no new read must happen (compared to FIFO).
      */
     private abstract static class MemoryRegionCache<T> {
         private final Entry<T>[] entries;
@@ -396,7 +399,8 @@ final class PoolThreadCache {
          * Allocate something out of the cache if possible and remove the entry from the cache.
          */
         public boolean allocate(PooledByteBuf<T> buf, int reqCapacity) {
-            Entry<T> entry = entries[head];
+            int index = prevIdx(tail);
+            Entry<T> entry = entries[index];
             if (entry.chunk == null) {
                 return false;
             }
@@ -408,7 +412,7 @@ final class PoolThreadCache {
             initBuf(entry.chunk, entry.handle, buf, reqCapacity);
             // only null out the chunk as we only use the chunk to check if the buffer is full or not.
             entry.chunk = null;
-            head = nextIdx(head);
+            tail = index;
             return true;
         }
 
@@ -445,10 +449,14 @@ final class PoolThreadCache {
             for (; free > 0; free--) {
                 if (!freeEntry(entries[i])) {
                     // all freed
-                    return;
+                    break;
                 }
                 i = nextIdx(i);
             }
+
+            // Update head to point to te correct entry
+            // See https://github.com/netty/netty/issues/2924
+            head = i;
         }
 
         @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -475,6 +483,11 @@ final class PoolThreadCache {
         private int nextIdx(int index) {
             // use bitwise operation as this is faster as using modulo.
             return index + 1 & entries.length - 1;
+        }
+
+        private int prevIdx(int index) {
+            // use bitwise operation as this is faster as using modulo.
+            return index - 1 & entries.length - 1;
         }
 
         private static final class Entry<T> {

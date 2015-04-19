@@ -15,12 +15,16 @@
  */
 package io.netty.handler.codec.spdy;
 
+import static io.netty.handler.codec.spdy.SpdyCodecUtil.SPDY_MAX_NV_LENGTH;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.util.AsciiString;
+import io.netty.util.ByteString;
+import io.netty.util.CharsetUtil;
 
 import java.util.Set;
-
-import static io.netty.handler.codec.spdy.SpdyCodecUtil.*;
 
 public class SpdyHeaderBlockRawEncoder extends SpdyHeaderBlockEncoder {
 
@@ -42,8 +46,8 @@ public class SpdyHeaderBlockRawEncoder extends SpdyHeaderBlockEncoder {
     }
 
     @Override
-    public ByteBuf encode(SpdyHeadersFrame frame) throws Exception {
-        Set<String> names = frame.headers().names();
+    public ByteBuf encode(ByteBufAllocator alloc, SpdyHeadersFrame frame) throws Exception {
+        Set<CharSequence> names = frame.headers().names();
         int numHeaders = names.size();
         if (numHeaders == 0) {
             return Unpooled.EMPTY_BUFFER;
@@ -52,21 +56,23 @@ public class SpdyHeaderBlockRawEncoder extends SpdyHeaderBlockEncoder {
             throw new IllegalArgumentException(
                     "header block contains too many headers");
         }
-        ByteBuf headerBlock = Unpooled.buffer();
+        ByteBuf headerBlock = alloc.heapBuffer();
         writeLengthField(headerBlock, numHeaders);
-        for (String name: names) {
-            byte[] nameBytes = name.getBytes("UTF-8");
-            writeLengthField(headerBlock, nameBytes.length);
-            headerBlock.writeBytes(nameBytes);
+        for (CharSequence name: names) {
+            final ByteString nameBytes = new ByteString(name, CharsetUtil.UTF_8);
+            int length = nameBytes.length();
+            writeLengthField(headerBlock, length);
+            ByteBufUtil.copy(nameBytes, 0, headerBlock, length);
             int savedIndex = headerBlock.writerIndex();
             int valueLength = 0;
             writeLengthField(headerBlock, valueLength);
-            for (String value: frame.headers().getAll(name)) {
-                byte[] valueBytes = value.getBytes("UTF-8");
-                if (valueBytes.length > 0) {
-                    headerBlock.writeBytes(valueBytes);
+            for (CharSequence value: frame.headers().getAll(name)) {
+                final ByteString valueBytes = new ByteString(value, CharsetUtil.UTF_8);
+                length = valueBytes.length();
+                if (length > 0) {
+                    ByteBufUtil.copy(valueBytes, 0, headerBlock, length);
                     headerBlock.writeByte(0);
-                    valueLength += valueBytes.length + 1;
+                    valueLength += length + 1;
                 }
             }
             if (valueLength != 0) {

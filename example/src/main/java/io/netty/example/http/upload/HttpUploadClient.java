@@ -24,6 +24,8 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.ClientCookieEncoder;
 import io.netty.handler.codec.http.DefaultCookie;
 import io.netty.handler.codec.http.DefaultHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
@@ -36,7 +38,8 @@ import io.netty.handler.codec.http.multipart.HttpDataFactory;
 import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
 import io.netty.handler.codec.http.multipart.InterfaceHttpData;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -85,8 +88,8 @@ public final class HttpUploadClient {
         final boolean ssl = "https".equalsIgnoreCase(scheme);
         final SslContext sslCtx;
         if (ssl) {
-            SelfSignedCertificate ssc = new SelfSignedCertificate();
-            sslCtx = SslContext.newServerContext(ssc.certificate(), ssc.privateKey());
+            sslCtx = SslContextBuilder.forClient()
+                .trustManager(InsecureTrustManagerFactory.INSTANCE).build();
         } else {
             sslCtx = null;
         }
@@ -163,27 +166,27 @@ public final class HttpUploadClient {
         URI uriGet = new URI(encoder.toString());
         HttpRequest request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, uriGet.toASCIIString());
         HttpHeaders headers = request.headers();
-        headers.set(HttpHeaders.Names.HOST, host);
-        headers.set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.CLOSE);
-        headers.set(HttpHeaders.Names.ACCEPT_ENCODING, HttpHeaders.Values.GZIP + "," + HttpHeaders.Values.DEFLATE);
+        headers.set(HttpHeaderNames.HOST, host);
+        headers.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+        headers.set(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP + "," + HttpHeaderValues.DEFLATE);
 
-        headers.set(HttpHeaders.Names.ACCEPT_CHARSET, "ISO-8859-1,utf-8;q=0.7,*;q=0.7");
-        headers.set(HttpHeaders.Names.ACCEPT_LANGUAGE, "fr");
-        headers.set(HttpHeaders.Names.REFERER, uriSimple.toString());
-        headers.set(HttpHeaders.Names.USER_AGENT, "Netty Simple Http Client side");
-        headers.set(HttpHeaders.Names.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+        headers.set(HttpHeaderNames.ACCEPT_CHARSET, "ISO-8859-1,utf-8;q=0.7,*;q=0.7");
+        headers.set(HttpHeaderNames.ACCEPT_LANGUAGE, "fr");
+        headers.set(HttpHeaderNames.REFERER, uriSimple.toString());
+        headers.set(HttpHeaderNames.USER_AGENT, "Netty Simple Http Client side");
+        headers.set(HttpHeaderNames.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
 
         //connection will not close but needed
         // headers.set("Connection","keep-alive");
 
         headers.set(
-                HttpHeaders.Names.COOKIE, ClientCookieEncoder.encode(
+                HttpHeaderNames.COOKIE, ClientCookieEncoder.encode(
                         new DefaultCookie("my-cookie", "foo"),
                         new DefaultCookie("another-cookie", "bar"))
         );
 
         // send request
-        List<Entry<String, String>> entries = headers.entries();
+        List<Entry<String, String>> entries = headers.entriesConverted();
         channel.writeAndFlush(request);
 
         // Wait for the server to close the connection.
