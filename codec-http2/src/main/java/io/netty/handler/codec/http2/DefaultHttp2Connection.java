@@ -89,6 +89,10 @@ public class DefaultHttp2Connection implements Http2Connection {
     final ActiveStreams activeStreams;
     Promise<Void> closePromise;
 
+    /// DEBUG
+    private volatile boolean isClosing;
+    /// DEBUG
+
     /**
      * Creates a new connection with the given settings.
      *
@@ -137,6 +141,7 @@ public class DefaultHttp2Connection implements Http2Connection {
         // paths iterating over the active streams.
         if (activeStreams.allowModifications()) {
             activeStreams.incrementPendingIterations();
+            isClosing = true;
             try {
                 while (itr.hasNext()) {
                     DefaultStream stream = (DefaultStream) itr.next().value();
@@ -148,6 +153,7 @@ public class DefaultHttp2Connection implements Http2Connection {
                     }
                 }
             } finally {
+                isClosing = false;
                 activeStreams.decrementPendingIterations();
             }
         } else {
@@ -291,6 +297,9 @@ public class DefaultHttp2Connection implements Http2Connection {
     void removeStream(DefaultStream stream, Iterator<?> itr) {
         if (stream.parent().removeChild(stream)) {
             if (itr == null) {
+                if (isClosing) {
+                    logger.error("We are removing from the stream map while iterating!", new Throwable());
+                }
                 streamMap.remove(stream.id());
             } else {
                 itr.remove();
